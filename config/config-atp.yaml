@@ -1,0 +1,91 @@
+client_connection:
+  initiation_timeout: 60s
+  relay_policy:
+    idle_timeout: 180s
+    min_rate_bpm: 0
+    max_rate_bps: 10000000000
+
+target_connection:
+  dns_cache_ttl: 900s
+
+  connect_timeout: 120s
+  allowed:
+    # ATP Defender
+    - crl.microsoft.com:80
+    - ctldl.windowsupdate.com:80
+    - www.microsoft.com:80
+    - events.data.microsoft.com:443
+    - "*.notify.windows.com:443"
+    - "*.wns.windows.com:443"
+    - login.microsoftonline.com:443
+    - login.live.com:443
+    - settings-win.data.microsoft.com:443
+    - x.cp.wd.microsoft.com:443
+    - cdn.x.cp.wd.microsoft.com:443
+    - eu-cdn.x.cp.wd.microsoft.com:443
+    - wu-cdn.x.cp.wd.microsoft.com:443
+    - officecdn-microsoft-com.akamaized.net:443
+    - crl.microsoft.com:443
+    - "*.ods.opinsights.azure.com:443"
+    - "*.oms.opinsights.azure.com:443"
+    - "*.azure-automation.net:443"
+    - "*.blob.core.windows.net:443"
+    - login.windows.net:443
+    - "*.securitycenter.windows.com:443"
+    # Microsoft Defender for Endpoint EU
+    - europe.x.cp.wd.microsoft.com:443
+    - eu.vortex-win.data.microsoft.com:443
+    - eu-v20.events.data.microsoft.com:443
+    - winatp-gw-neu.microsoft.com:443
+    - winatp-gw-weu.microsoft.com:443
+    - automatedirstrprdneu.blob.core.windows.net:443
+    - automatedirstrprdweu.blob.core.windows.net:443
+    - usseu1northprod.blob.core.windows.net:443
+    - wseu1northprod.blob.core.windows.net:443
+    - usseu1westprod.blob.core.windows.net:443
+    - wseu1westprod.blob.core.windows.net:443
+    # WW divers
+    - "*.update.microsoft.com:443"
+    - "*.delivery.mp.microsoft.com:443"
+    - "*.windowsupdate.com:443"
+    - go.microsoft.com:80
+    - definitionupdates.microsoft.com:443
+    - "*download.windowsupdate.com:443"
+    - "*.download.microsoft.com:443"
+    - fe3cr.delivery.mp.microsoft.com:443
+    - www.microsoft.com:80
+    - crl.microsoft.com:80
+    - msdl.microsoft.com:443
+    - vortex-win.data.microsoft.com:443
+    - settings-win.data.microsoft.com:443
+    - "*.wdcp.microsoft.com:443"
+    - "*.wdcpalt.microsoft.com:443"
+    - "*.wd.microsoft.com:443"
+    # Malware Submission
+    - usseu1northprod.blob.core.windows.net:443
+    - wseu1northprod.blob.core.windows.net:443
+    - usseu1westprod.blob.core.windows.net:443
+    - wseu1westprod.blob.core.windows.net:443
+    # Reporting and Notifications
+    - "*smartscreen-prod.microsoft.com:443"
+    - "*smartscreen.microsoft.com:443"
+    - "*checkappexec.microsoft.com:443"
+    - "*urs.microsoft.com:443"
+    # Microsoft Update
+    - http://windowsupdate.microsoft.com
+    - http://*.windowsupdate.microsoft.com
+    - https://*.windowsupdate.microsoft.com
+    - http://*.update.microsoft.com
+    - https://*.update.microsoft.com
+    - http://*.windowsupdate.com
+    - http://download.windowsupdate.com
+    - https://download.microsoft.com
+    - http://*.download.windowsupdate.com
+    - http://wustat.windows.com
+    - http://ntservicepack.microsoft.com
+    - http://go.microsoft.com
+    - https://www.catalog.update.microsoft.com
+  relay_policy:
+    idle_timeout: 180s
+    min_rate_bpm: 0
+    max_rate_bps: 10000000000

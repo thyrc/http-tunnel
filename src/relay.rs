@@ -1,19 +1,12 @@
-/// Copyright 2020 Developers of the http-tunnel project.
-///
-/// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-/// https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-/// <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
-/// option. This file may not be copied, modified, or distributed
-/// except according to those terms.
 use core::fmt;
+use log::{debug, error, info};
 use std::future::Future;
 use std::time::{Duration, Instant};
-
-use crate::tunnel::TunnelCtx;
-use log::{debug, error, info};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::time::timeout;
+
+use crate::tunnel::TunnelCtx;
 
 pub const NO_TIMEOUT: Duration = Duration::from_secs(300);
 pub const NO_BANDWIDTH_LIMIT: u64 = 1_000_000_000_000_u64;
@@ -54,13 +47,16 @@ pub struct RelayStats {
 /// Relay policy is meant to protect targets and proxy servers from
 /// different sorts of abuse. Currently it only checks too slow or too fast connections,
 /// which may lead to different capacity issues.
-#[derive(Builder, Deserialize, Clone)]
+#[derive(Builder, Deserialize, Clone, Debug)]
 pub struct RelayPolicy {
+    #[serde(default)]
     #[serde(with = "humantime_serde")]
     pub idle_timeout: Duration,
     /// Min bytes-per-minute (bpm)
+    #[serde(default)]
     pub min_rate_bpm: u64,
     // Max bytes-per-second (bps)
+    #[serde(default)]
     pub max_rate_bps: u64,
 }
 
@@ -205,7 +201,6 @@ impl RelayPolicy {
         } else if elapsed.as_secs_f32() >= 30.
             && total_bytes as f64 / elapsed.as_secs_f64() / 60. < self.min_rate_bpm as f64
         {
-            // prevent slowloris: https://en.wikipedia.org/wiki/Slowloris_(computer_security)
             Err(RelayShutdownReasons::TooSlow)
         } else {
             Ok(())
@@ -227,7 +222,6 @@ impl RelayPolicy {
     }
 }
 
-// cov:begin-ignore-line
 impl fmt::Display for RelayStats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -241,7 +235,17 @@ impl fmt::Display for RelayStats {
         )
     }
 }
-// cov:end-ignore-line
+
+impl Default for RelayPolicy {
+    fn default() -> Self {
+        // by default no restrictions
+        Self {
+            idle_timeout: NO_TIMEOUT,
+            min_rate_bpm: 0,
+            max_rate_bps: NO_BANDWIDTH_LIMIT,
+        }
+    }
+}
 
 #[cfg(test)]
 mod test_relay_policy {

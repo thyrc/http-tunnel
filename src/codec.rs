@@ -1,21 +1,12 @@
-/// Copyright 2020 Developers of the http-tunnel project.
-///
-/// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-/// https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-/// <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
-/// option. This file may not be copied, modified, or distributed
-/// except according to those terms.
-use std::fmt::Write;
-
-use async_trait::async_trait;
 use bytes::BytesMut;
-use log::debug;
+use core::fmt;
+use log::{debug, warn};
 use regex::Regex;
+use std::fmt::Write;
 use tokio::io::{Error, ErrorKind};
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::tunnel::{EstablishTunnelResult, TunnelCtx, TunnelTarget};
-use core::fmt;
 
 const REQUEST_END_MARKER: &[u8] = b"\r\n\r\n";
 /// A reasonable value to limit possible header size
@@ -26,9 +17,6 @@ const MAX_HTTP_REQUEST_SIZE: usize = 1024;
 /// Supports only `CONNECT` method
 struct HttpConnectRequest {
     uri: String,
-    // out of scope of this demo, but let's put it here for extensibility
-    // e.g. Authorization/Policies headers
-    // headers: Vec<(String, String)>,
 }
 
 #[derive(Builder, Eq, PartialEq, Debug, Clone)]
@@ -42,7 +30,7 @@ pub struct HttpTunnelTarget {
 #[derive(Clone, Builder)]
 pub struct HttpTunnelCodec {
     tunnel_ctx: TunnelCtx,
-    enabled_targets: Regex,
+    enabled_targets: Option<Regex>,
 }
 
 impl Decoder for HttpTunnelCodec {
@@ -55,22 +43,21 @@ impl Decoder for HttpTunnelCodec {
         }
 
         match HttpConnectRequest::parse(&src) {
-            Ok(parsed_request) => {
-                if !self.enabled_targets.is_match(&parsed_request.uri) {
-                    debug!(
+            Ok(parsed_request) => match &self.enabled_targets {
+                Some(regex) if !regex.is_match(&parsed_request.uri) => {
+                    warn!(
                         "Target `{}` is not allowed. Allowed: `{}`, CTX={}",
-                        parsed_request.uri, self.enabled_targets, self.tunnel_ctx
+                        parsed_request.uri, regex, self.tunnel_ctx
                     );
                     Err(EstablishTunnelResult::Forbidden)
-                } else {
-                    Ok(Some(
-                        HttpTunnelTargetBuilder::default()
-                            .target(parsed_request.uri)
-                            .build()
-                            .expect("HttpTunnelTargetBuilder failed"),
-                    ))
                 }
-            }
+                _ => Ok(Some(
+                    HttpTunnelTargetBuilder::default()
+                        .target(parsed_request.uri)
+                        .build()
+                        .expect("HttpTunnelTargetBuilder failed"),
+                )),
+            },
             Err(e) => Err(e),
         }
     }
@@ -101,7 +88,6 @@ impl Encoder<EstablishTunnelResult> for HttpTunnelCodec {
     }
 }
 
-#[async_trait]
 impl TunnelTarget for HttpTunnelTarget {
     type Addr = String;
 
@@ -110,13 +96,11 @@ impl TunnelTarget for HttpTunnelTarget {
     }
 }
 
-// cov:begin-ignore-line
 impl fmt::Display for HttpTunnelTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.target)
     }
 }
-// cov:end-ignore-line
 
 fn got_http_request(buffer: &BytesMut) -> bool {
     buffer.len() >= MAX_HTTP_REQUEST_SIZE || buffer.ends_with(REQUEST_END_MARKER)
@@ -170,29 +154,29 @@ impl HttpConnectRequest {
         request_line: &str,
         request_line_items: &[&str],
     ) -> Result<(), EstablishTunnelResult> {
-        if request_line_items.len() != 3 {
+        if request_line_items.len() == 3 {
+            Ok(())
+        } else {
             debug!("Bad request line: `{:?}`", request_line,);
             Err(EstablishTunnelResult::BadRequest)
-        } else {
-            Ok(())
         }
     }
 
     fn check_version(version: &str) -> Result<(), EstablishTunnelResult> {
-        if version != "HTTP/1.1" {
-            debug!("Bad version {}", version);
-            Err(EstablishTunnelResult::BadRequest)
-        } else {
+        if version == "HTTP/1.1" {
             Ok(())
+        } else {
+            debug!("Bad version '{}'", version);
+            Err(EstablishTunnelResult::BadRequest)
         }
     }
 
     fn check_method(method: &str) -> Result<(), EstablishTunnelResult> {
-        if method != "CONNECT" {
-            debug!("Not allowed method {}", method);
-            Err(EstablishTunnelResult::OperationNotAllowed)
-        } else {
+        if method == "CONNECT" {
             Ok(())
+        } else {
+            debug!("Method not allowed '{}'", method);
+            Err(EstablishTunnelResult::OperationNotAllowed)
         }
     }
 
@@ -230,7 +214,7 @@ mod tests {
     use regex::Regex;
     use tokio_util::codec::{Decoder, Encoder};
 
-    use crate::http_tunnel_codec::{
+    use crate::codec::{
         EstablishTunnelResult, HttpTunnelCodec, HttpTunnelCodecBuilder, HttpTunnelTargetBuilder,
         MAX_HTTP_REQUEST_SIZE, REQUEST_END_MARKER,
     };
@@ -392,7 +376,7 @@ mod tests {
 
         HttpTunnelCodecBuilder::default()
             .tunnel_ctx(ctx)
-            .enabled_targets(Regex::new(r"foo\.bar\.com:443").unwrap())
+            .enabled_targets(Some(Regex::new(r"foo\.bar\.com:443").unwrap()))
             .build()
             .unwrap()
     }

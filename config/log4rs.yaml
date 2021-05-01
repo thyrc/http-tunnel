@@ -6,38 +6,38 @@ appenders:
 
   metrics:
     kind: rolling_file
-    path: log/metrics.log
+    path: log/atp-metrics.log
     policy:
       kind: compound
       roller:
         kind: fixed_window
         count: 10
         base: 1
-        pattern: log/metrics.{}.log
+        pattern: log/atp-metrics.{}.log
       trigger:
         kind: size
         limit: 10mb
     encoder:
-      pattern: "{d} - {m}{n}"
+      pattern: "{d(%FT%T%.9f%:z)} - {m}{n}"
 
   application:
     kind: rolling_file
-    path: log/application.log
+    path: log/atp-tunnel.log
     policy:
       kind: compound
       roller:
         kind: fixed_window
         count: 10
         base: 1
-        pattern: log/application.{}.log
+        pattern: log/atp-tunnel.{}.log
       trigger:
         kind: size
         limit: 10mb
     encoder:
-      pattern: "{d} - [{l}] {f}:{L} - {m}{n}"
+      pattern: "{d(%FT%T%.9f%:z)} - [{l}] {f}:{L} - {m}{n}"
 
 root:
-  level: info
+  level: warn
   appenders:
     - application
 

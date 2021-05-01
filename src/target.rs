@@ -1,11 +1,3 @@
-/// Copyright 2020 Developers of the http-tunnel project.
-///
-/// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-/// https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-/// <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
-/// option. This file may not be copied, modified, or distributed
-/// except according to those terms.
-use crate::tunnel::{TunnelCtx, TunnelTarget};
 use async_trait::async_trait;
 use log::{debug, error, info};
 use rand::prelude::thread_rng;
@@ -22,6 +14,8 @@ use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tokio::time::Duration;
 
+use crate::tunnel::{TunnelCtx, TunnelTarget};
+
 #[async_trait]
 pub trait TargetConnector {
     type Target: TunnelTarget + Send + Sync + Sized;
@@ -35,12 +29,11 @@ pub trait DnsResolver {
     async fn resolve(&mut self, target: &str) -> io::Result<SocketAddr>;
 }
 
-#[derive(Clone, Builder)]
+#[derive(Clone)]
 pub struct SimpleTcpConnector<D, R: DnsResolver> {
     connect_timeout: Duration,
     tunnel_ctx: TunnelCtx,
     dns_resolver: R,
-    #[builder(setter(skip))]
     _phantom_target: PhantomData<D>,
 }
 
@@ -55,8 +48,8 @@ type CachedSocketAddrs = (Vec<SocketAddr>, u128);
 pub struct SimpleCachingDnsResolver {
     // mostly reads, occasional writes
     cache: Arc<RwLock<HashMap<String, CachedSocketAddrs>>>,
-    ttl: Duration,
     start_time: Instant,
+    ttl: Duration,
 }
 
 #[async_trait]
@@ -106,7 +99,7 @@ where
             dns_resolver,
             connect_timeout,
             tunnel_ctx,
-            _phantom_target: PhantomData,
+            _phantom_target: std::marker::PhantomData::default(),
         }
     }
 }
@@ -120,7 +113,7 @@ impl SimpleCachingDnsResolver {
         }
     }
 
-    fn pick(&self, addrs: &[SocketAddr]) -> SocketAddr {
+    fn pick(addrs: &[SocketAddr]) -> SocketAddr {
         addrs[thread_rng().gen::<usize>() % addrs.len()]
     }
 
@@ -133,7 +126,7 @@ impl SimpleCachingDnsResolver {
                 // expiration with gitter to avoid waves of expirations
                 let expiration_gitter = *expiration + thread_rng().gen_range(0..5_000);
                 if Instant::now().duration_since(self.start_time).as_millis() < expiration_gitter {
-                    Some(self.pick(cached))
+                    Some(SimpleCachingDnsResolver::pick(cached))
                 } else {
                     None
                 }
@@ -155,7 +148,7 @@ impl SimpleCachingDnsResolver {
             ),
         );
 
-        Ok(self.pick(&resolved))
+        Ok(SimpleCachingDnsResolver::pick(&resolved))
     }
 
     async fn resolve(target: &str) -> io::Result<Vec<SocketAddr>> {

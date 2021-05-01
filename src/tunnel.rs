@@ -1,25 +1,16 @@
-/// Copyright 2020 Developers of the http-tunnel project.
-///
-/// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-/// https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-/// <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
-/// option. This file may not be copied, modified, or distributed
-/// except according to those terms.
-use async_trait::async_trait;
+use core::fmt;
+use futures::stream::SplitStream;
 use futures::{SinkExt, StreamExt};
 use log::{debug, error};
-use tokio::io;
-use tokio::io::{AsyncRead, AsyncWrite};
+use std::fmt::Display;
+use std::time::Duration;
+use tokio::io::{self, AsyncRead, AsyncWrite};
 use tokio::time::timeout;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
-use crate::configuration::TunnelConfig;
-use crate::proxy_target::TargetConnector;
+use crate::config::TunnelConfig;
 use crate::relay::{Relay, RelayBuilder, RelayPolicy, RelayStats};
-use core::fmt;
-use futures::stream::SplitStream;
-use std::fmt::Display;
-use std::time::Duration;
+use crate::target::TargetConnector;
 
 #[derive(Eq, PartialEq, EnumIter, Debug, Copy, Clone, Serialize)]
 pub enum EstablishTunnelResult {
@@ -63,7 +54,6 @@ pub struct ConnectionTunnel<H, C, T> {
     tunnel_config: TunnelConfig,
 }
 
-#[async_trait]
 pub trait TunnelTarget {
     type Addr;
     fn target_addr(&self) -> Self::Addr;
@@ -76,7 +66,7 @@ pub struct TunnelCtx {
     id: u128,
 }
 
-/// Statistics. No sensitive information.
+/// Statistics
 #[derive(Serialize, Builder)]
 pub struct TunnelStats {
     tunnel_ctx: TunnelCtx,
@@ -201,7 +191,7 @@ where
         let mut target = None;
 
         if connect_request.is_err() {
-            error!("Client established TLS connection but failed to send HTTP CONNECT request within {:?}, CTX={}",
+            error!("Client established connection but failed to send HTTP CONNECT request within {:?}, CTX={}",
                    configuration.client_connection.initiation_timeout,
                    self.tunnel_ctx);
             response = EstablishTunnelResult::RequestTimeout;
@@ -301,13 +291,11 @@ pub async fn relay_connections<
     })
 }
 
-// cov:begin-ignore-line
 impl fmt::Display for TunnelCtx {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.id)
     }
 }
-// cov:end-ignore-line
 
 #[cfg(test)]
 mod test {
@@ -323,9 +311,9 @@ mod test {
     use crate::relay::RelayPolicy;
 
     use self::tokio::io::{Error, ErrorKind};
-    use crate::configuration::{ClientConnectionConfig, TargetConnectionConfig, TunnelConfig};
-    use crate::http_tunnel_codec::{HttpTunnelCodec, HttpTunnelCodecBuilder, HttpTunnelTarget};
-    use crate::proxy_target::TargetConnector;
+    use crate::codec::{HttpTunnelCodec, HttpTunnelCodecBuilder, HttpTunnelTarget};
+    use crate::config::{ClientConnectionConfig, TargetConnectionConfig, TunnelConfig};
+    use crate::target::TargetConnector;
     use crate::tunnel::{ConnectionTunnel, EstablishTunnelResult, TunnelCtxBuilder, TunnelTarget};
     use rand::{thread_rng, Rng};
     use regex::Regex;
@@ -356,7 +344,7 @@ mod test {
 
         let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
             .tunnel_ctx(ctx)
-            .enabled_targets(Regex::new(r"foo\.bar:80").unwrap())
+            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
             .build()
             .expect("ConnectRequestCodecBuilder failed");
 
@@ -403,7 +391,7 @@ mod test {
 
         let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
             .tunnel_ctx(ctx)
-            .enabled_targets(Regex::new(r"foo\.bar:80").unwrap())
+            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
             .build()
             .expect("HttpTunnelCodecBuilder failed");
 
@@ -446,7 +434,7 @@ mod test {
 
         let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
             .tunnel_ctx(ctx)
-            .enabled_targets(Regex::new(r"foo\.bar:80").unwrap())
+            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
             .build()
             .expect("HttpTunnelCodecBuilder failed");
 
@@ -490,7 +478,7 @@ mod test {
 
         let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
             .tunnel_ctx(ctx)
-            .enabled_targets(Regex::new(r"foo\.bar:80").unwrap())
+            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
             .build()
             .expect("HttpTunnelCodecBuilder failed");
 
@@ -534,7 +522,7 @@ mod test {
 
         let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
             .tunnel_ctx(ctx)
-            .enabled_targets(Regex::new(r"foo\.bar:80").unwrap())
+            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
             .build()
             .expect("HttpTunnelCodecBuilder failed");
 
@@ -578,7 +566,7 @@ mod test {
 
         let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
             .tunnel_ctx(ctx)
-            .enabled_targets(Regex::new(r"foo\.bar:80").unwrap())
+            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
             .build()
             .expect("HttpTunnelCodecBuilder failed");
 
@@ -622,7 +610,7 @@ mod test {
 
         let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
             .tunnel_ctx(ctx)
-            .enabled_targets(Regex::new(r"foo\.bar:80").unwrap())
+            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
             .build()
             .expect("HttpTunnelCodecBuilder failed");
 
@@ -666,7 +654,7 @@ mod test {
 
         let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
             .tunnel_ctx(ctx)
-            .enabled_targets(Regex::new(r"foo\.bar:80").unwrap())
+            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
             .build()
             .expect("HttpTunnelCodecBuilder failed");
 
@@ -703,7 +691,8 @@ mod test {
             },
             target_connection: TargetConnectionConfig {
                 dns_cache_ttl: default_timeout,
-                allowed_targets: Regex::new(r"foo\.bar:80").unwrap(),
+                allowed_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
+                allowed: vec!["foo.bar:80".to_string()],
                 connect_timeout: default_timeout,
                 relay_policy: RelayPolicy {
                     idle_timeout: default_timeout,

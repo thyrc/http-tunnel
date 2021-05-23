@@ -2,9 +2,6 @@
 extern crate derive_builder;
 #[macro_use]
 extern crate serde_derive;
-extern crate strum;
-#[macro_use]
-extern crate strum_macros;
 
 use log::{debug, error, info};
 use rand::{thread_rng, Rng};
@@ -103,10 +100,12 @@ async fn tunnel_stream<C: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
         .build()
         .expect("TunnelCtxBuilder failed");
 
-    let enabled_targets = match &config.tunnel_config.target_connection.allowed_targets {
-        None => None,
-        Some(targets) => Some(targets.clone()),
-    };
+    let enabled_targets = config
+        .tunnel_config
+        .target_connection
+        .allowed_targets
+        .as_ref()
+        .cloned();
 
     // here it can be any codec.
     let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()

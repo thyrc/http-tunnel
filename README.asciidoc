@@ -1,0 +1,141 @@
+Based on xnuter's http-tunnel crate and HTTP proxy example.
+
+Please refer to the original link:https://github.com/xnuter/http-tunnel[http-tunnel] repository, link:https://crates.io/crates/http-tunnel[crates.io] page or excellent link:https://medium.com/swlh/writing-a-modern-http-s-tunnel-in-rust-56e70d898700[guide].
+
+### Overview
+
+An implementation of link:https://en.wikipedia.org/wiki/HTTP_tunnel[HTTP Tunnel] in Rust.
+
+This is a simplified version of the original, supporting only HTTP connections, with a few changes to config file handling & regex building.
+
+Tunneling of plain text over HTTP proxy (w/o CONNECT) is disabled by default. If you need this functionality you need to build http-tunnel with the plain_text feature:
+
+```shell
+cargo build --release --features plain_text
+```
+
+'''
+
+[cols="h,2*",options="header",width="100%"cols="2s,8,8"]
+|===
+||http-tunnel|squid
+
+|Memory|Name:	http-tunnel +
+... +
+VmPeak:	  220328 kB +
+VmSize:	   16872 kB +
+VmLck:	       0 kB +
+VmPin:	       0 kB +
+VmHWM:	   24016 kB +
+VmRSS:	    4220 kB +
+RssAnon:	    1760 kB +
+RssFile:	    2460 kB +
+RssShmem:	       0 kB +
+VmData:	   13764 kB +
+VmStk:	     136 kB +
+VmExe:	    1204 kB +
+VmLib:	     460 kB +
+VmPTE:	     120 kB +
+VmSwap:	       0 kB +
+|Name:	squid +
+... +
+VmPeak:	   83740 kB +
+VmSize:	   30180 kB +
+VmLck:	       0 kB +
+VmPin:	       0 kB +
+VmHWM:	   43836 kB +
+VmRSS:	   19392 kB +
+RssAnon:	    9356 kB +
+RssFile:	   10036 kB +
+RssShmem:	       0 kB +
+VmData:	   16848 kB +
+VmStk:	     136 kB +
+VmExe:	    4140 kB +
+VmLib:	    3504 kB +
+VmPTE:	     120 kB +
+VmSwap:	       0 kB
+|Size |2075 kB|8380 kB
+|Performance|./hey -n 50000 -c 500 -x "http://127.0.0.1:8443" http://127.0.0.1 +
+ +
+Summary: +
+  Total:	1.4263 secs +
+  Slowest:	0.1631 secs +
+  Fastest:	0.0001 secs +
+  Average:	0.0131 secs +
+  Requests/sec:	35055.4656 +
+ +
+ +
+Response time histogram: +
+  0.000 [1]	\| +
+  0.016 [37629]	\|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ +
+  0.033 [10212]	\|■■■■■■■■■■■ +
+  0.049 [1500]	\|■■ +
+  0.065 [219]	\| +
+  0.082 [145]	\| +
+  0.098 [150]	\| +
+  0.114 [73]	\| +
+  0.131 [37]	\| +
+  0.147 [6]	\| +
+  0.163 [28]	\| +
+ +
+ +
+Latency distribution: +
+  10% in 0.0038 secs +
+  25% in 0.0065 secs +
+  50% in 0.0104 secs +
+  75% in 0.0163 secs +
+  90% in 0.0241 secs +
+  95% in 0.0311 secs +
+  99% in 0.0588 secs +
+ +
+Details (average, fastest, slowest): +
+  DNS+dialup:	0.0003 secs, 0.0000 secs, 0.0816 secs +
+  DNS-lookup:	0.0000 secs, 0.0000 secs, 0.0000 secs +
+  req write:	0.0000 secs, 0.0000 secs, 0.0325 secs +
+  resp wait:	0.0100 secs, 0.0001 secs, 0.0621 secs +
+  resp read:	0.0025 secs, 0.0000 secs, 0.0556 secs +
+ +
+Status code distribution: +
+  [200]	50000 response\| +
+|./hey -n 50000 -c 500 -x "http://127.0.0.1:3128" http://127.0.0.1 +
+ +
+Summary: +
+  Total:	6.6754 secs +
+  Slowest:	0.3560 secs +
+  Fastest:	0.0007 secs +
+  Average:	0.0657 secs +
+  Requests/sec:	7490.1583 +
+ +
+ +
+Response time histogram: +
+  0.001 [1]	\| +
+  0.036 [74]	\| +
+  0.072 [47737]	\|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ +
+  0.107 [2092]	\|■■ +
+  0.143 [82]	\| +
+  0.178 [3]	\| +
+  0.214 [1]	\| +
+  0.249 [3]	\| +
+  0.285 [2]	\| +
+  0.320 [2]	\| +
+  0.356 [3]	\| +
+ +
+ +
+Latency distribution: +
+  10% in 0.0617 secs +
+  25% in 0.0640 secs +
+  50% in 0.0658 secs +
+  75% in 0.0672 secs +
+  90% in 0.0691 secs +
+  95% in 0.0711 secs +
+  99% in 0.0804 secs +
+ +
+Details (average, fastest, slowest): +
+  DNS+dialup:	0.0001 secs, 0.0000 secs, 0.0817 secs +
+  DNS-lookup:	0.0000 secs, 0.0000 secs, 0.0000 secs +
+  req write:	0.0001 secs, 0.0000 secs, 0.0856 secs +
+  resp wait:	0.0650 secs, 0.0005 secs, 0.3540 secs +
+  resp read:	0.0002 secs, 0.0000 secs, 0.0345 secs +
+ +
+Status code distribution: +
+  [200]	50000 responses +

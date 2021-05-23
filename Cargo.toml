@@ -1,6 +1,6 @@
 [package]
 name = "http-tunnel"
-version = "0.1.9"
+version = "0.1.10"
 authors = ["Eugene Retunsky"]
 license = "MIT"
 edition = "2018"
@@ -15,7 +15,7 @@ Based on Eugene Retunsky's http-tunnel example.
 
 [dependencies]
 clap = "2"
-regex = "1.4"
+regex = "1.5"
 rand = "0.8"
 yaml-rust = "0.4"
 serde = { version = "1.0", features = ["derive"] }
@@ -25,9 +25,7 @@ serde_json = "1.0"
 serde_regex = "1.1"
 humantime-serde = "1.0"
 async-trait = "0.1"
-strum = "0.20"
-strum_macros = "0.20"
-derive_builder = "0.9"
+derive_builder = "0.10"
 log = "0.4"
 log4rs = "1"
 tokio = { version = "1", features = ["full"] }
@@ -46,3 +44,7 @@ opt-level = 0
 opt-level = "z"
 lto = "fat"
 panic = "abort"
+
+[features]
+default = []
+plain_text = []

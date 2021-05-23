@@ -16,7 +16,10 @@ pub fn report_tunnel_metrics(ctx: TunnelCtx, stats: io::Result<TunnelStats>) {
 
 pub fn init_logger() {
     let logger_configuration = "./config/log4rs.yaml";
-    if let Err(e) = log4rs::init_file(logger_configuration, log4rs::config::Deserializers::default()) {
+    if let Err(e) = log4rs::init_file(
+        logger_configuration,
+        log4rs::config::Deserializers::default(),
+    ) {
         println!(
             "Cannot initialize logger from {}, error=[{}]. Logging to the console.",
             logger_configuration, e

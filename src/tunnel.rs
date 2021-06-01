@@ -761,6 +761,7 @@ mod test {
             },
             target_connection: TargetConnectionConfig {
                 dns_cache_ttl: default_timeout,
+                ipv4_only: false,
                 allowed_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
                 allowed: vec!["foo.bar:80".to_string()],
                 connect_timeout: default_timeout,

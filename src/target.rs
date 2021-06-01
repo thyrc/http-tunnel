@@ -55,6 +55,7 @@ pub struct SimpleCachingDnsResolver {
     cache: Arc<RwLock<HashMap<String, CachedSocketAddrs>>>,
     start_time: Instant,
     ttl: Duration,
+    ipv4: bool,
 }
 
 #[async_trait]
@@ -75,6 +76,10 @@ where
             let mut stream = tcp_stream?;
             stream.nodelay()?;
             if target.has_nugget() {
+                debug!(
+                    "Establishing plain text connection to target: {}",
+                    &target_addr
+                );
                 if let Ok(written_successfully) = timeout(
                     self.connect_timeout,
                     stream.write_all(&target.nugget().data()),
@@ -126,11 +131,12 @@ where
 }
 
 impl SimpleCachingDnsResolver {
-    pub fn new(ttl: Duration) -> Self {
+    pub fn new(ttl: Duration, ipv4: bool) -> Self {
         Self {
             cache: Arc::new(RwLock::new(HashMap::new())),
             ttl,
             start_time: Instant::now(),
+            ipv4,
         }
     }
 
@@ -158,7 +164,7 @@ impl SimpleCachingDnsResolver {
     }
 
     async fn resolve_and_cache(&mut self, target: &str) -> io::Result<SocketAddr> {
-        let resolved = SimpleCachingDnsResolver::resolve(target).await?;
+        let resolved = SimpleCachingDnsResolver::resolve(target, self.ipv4).await?;
 
         let mut map = self.cache.write().await;
         map.insert(
@@ -172,9 +178,12 @@ impl SimpleCachingDnsResolver {
         Ok(SimpleCachingDnsResolver::pick(&resolved))
     }
 
-    async fn resolve(target: &str) -> io::Result<Vec<SocketAddr>> {
-        debug!("Resolving DNS {}", target,);
-        let resolved: Vec<SocketAddr> = tokio::net::lookup_host(target).await?.collect();
+    async fn resolve(target: &str, ipv4: bool) -> io::Result<Vec<SocketAddr>> {
+        debug!("Resolving DNS {}", target);
+        let mut resolved: Vec<SocketAddr> = tokio::net::lookup_host(target).await?.collect();
+        if ipv4 {
+            resolved.retain(std::net::SocketAddr::is_ipv4);
+        }
         info!("Resolved DNS {} to {:?}", target, resolved);
 
         if resolved.is_empty() {

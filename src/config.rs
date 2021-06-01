@@ -22,6 +22,8 @@ pub struct TargetConnectionConfig {
     #[serde(with = "humantime_serde")]
     pub dns_cache_ttl: Duration,
     #[serde(default)]
+    pub ipv4_only: bool,
+    #[serde(default)]
     #[serde(with = "serde_regex")]
     pub allowed_targets: Option<Regex>,
     #[serde(default)]
@@ -65,6 +67,7 @@ impl Default for TunnelConfig {
             },
             target_connection: TargetConnectionConfig {
                 dns_cache_ttl: NO_TIMEOUT,
+                ipv4_only: false,
                 allowed_targets: None,
                 allowed: vec![],
                 connect_timeout: NO_TIMEOUT,

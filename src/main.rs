@@ -50,6 +50,10 @@ async fn main() -> io::Result<()> {
             .tunnel_config
             .target_connection
             .dns_cache_ttl,
+        proxy_configuration
+            .tunnel_config
+            .target_connection
+            .ipv4_only,
     );
 
     match &proxy_configuration.mode {

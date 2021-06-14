@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use rand::prelude::thread_rng;
 use rand::Rng;
 use std::collections::HashMap;
@@ -76,7 +76,7 @@ where
             let mut stream = tcp_stream?;
             stream.nodelay()?;
             if target.has_nugget() {
-                debug!(
+                warn!(
                     "Establishing plain text connection to target: {}",
                     &target_addr
                 );
@@ -150,9 +150,9 @@ impl SimpleCachingDnsResolver {
         let addr = match map.get(target) {
             None => None,
             Some((cached, expiration)) => {
-                // expiration with gitter to avoid waves of expirations
-                let expiration_gitter = *expiration + thread_rng().gen_range(0..5_000);
-                if Instant::now().duration_since(self.start_time).as_millis() < expiration_gitter {
+                // expiration with jitter to avoid waves of expirations
+                let expiration_jitter = *expiration + thread_rng().gen_range(0..5_000);
+                if Instant::now().duration_since(self.start_time).as_millis() < expiration_jitter {
                     Some(SimpleCachingDnsResolver::pick(cached))
                 } else {
                     None

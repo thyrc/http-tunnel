@@ -1,4 +1,4 @@
-use log::{error, info, LevelFilter};
+use log::{debug, error, info, LevelFilter};
 use log4rs::append::console::ConsoleAppender;
 use log4rs::config::{Appender, Root};
 use log4rs::Config;
@@ -14,8 +14,17 @@ pub fn report_tunnel_metrics(ctx: TunnelCtx, stats: io::Result<TunnelStats>) {
     }
 }
 
-pub fn init_logger() {
-    let logger_configuration = "./config/log4rs.yaml";
+pub fn init_logger(log_config_file: &Option<String>) {
+    let logger_configuration = match log_config_file {
+        Some(file) => file,
+        _ => "./config/log4rs.yaml",
+    };
+
+    debug!(
+        "Reading logging configuration from {}",
+        logger_configuration
+    );
+
     if let Err(e) = log4rs::init_file(
         logger_configuration,
         log4rs::config::Deserializers::default(),

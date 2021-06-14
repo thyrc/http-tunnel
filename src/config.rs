@@ -51,6 +51,7 @@ pub struct ProxyConfiguration {
     pub mode: ProxyMode,
     pub bind_address: String,
     pub tunnel_config: TunnelConfig,
+    pub log_config_file: Option<String>,
 }
 
 impl Default for TunnelConfig {
@@ -126,11 +127,16 @@ impl ProxyConfiguration {
             (author: env!("CARGO_PKG_AUTHORS"))
             (about: "A simple HTTP(S) tunnel")
             (@arg CONFIG: --config +takes_value "Configuration file")
+            (@arg LOG: --log +takes_value "Log configuration file")
             (@arg BIND: --bind +required +takes_value "Bind address, e.g. 0.0.0.0:8443")
         )
         .get_matches();
 
         let config = matches.value_of("CONFIG");
+
+        let log_config_file = matches
+            .value_of("LOG")
+            .map(std::string::ToString::to_string);
 
         let bind_address = matches
             .value_of("BIND")
@@ -148,6 +154,7 @@ impl ProxyConfiguration {
             .bind_address(bind_address)
             .mode(mode)
             .tunnel_config(tunnel_config)
+            .log_config_file(log_config_file)
             .build()
             .expect("ProxyConfigurationBuilder failed"))
     }

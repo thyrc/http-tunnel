@@ -30,7 +30,7 @@ async fn main() -> io::Result<()> {
         e
     })?;
 
-    init_logger();
+    init_logger(&proxy_configuration.log_config_file);
 
     debug!("Starting with configuration: {:#?}", proxy_configuration);
     info!("Starting listener on: {}", proxy_configuration.bind_address);

@@ -6,7 +6,7 @@ Please refer to the original link:https://github.com/xnuter/http-tunnel[http-tun
 
 An implementation of link:https://en.wikipedia.org/wiki/HTTP_tunnel[HTTP Tunnel] in Rust.
 
-This is a simplified version of the original, supporting only HTTP connections, with a few changes to config file handling & regex building.
+This is a simplified version of the original, with a few changes to config file handling & regex building.
 
 Tunneling of plain text over HTTP proxy (w/o CONNECT) is disabled by default. If you need this functionality you need to build http-tunnel with the plain_text feature:
 
@@ -16,7 +16,7 @@ cargo build --release --features plain_text
 
 '''
 
-[cols="h,2*",options="header",width="100%"cols="2s,8,8"]
+[cols="2s,8,8"]
 |===
 ||http-tunnel|squid
 
@@ -139,3 +139,4 @@ Details (average, fastest, slowest): +
  +
 Status code distribution: +
   [200]	50000 responses +
+|===

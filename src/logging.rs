@@ -10,7 +10,7 @@ pub fn report_tunnel_metrics(ctx: TunnelCtx, stats: io::Result<TunnelStats>) {
     if let Ok(s) = stats {
         info!(target: "metrics", "{}", serde_json::to_string(&s).expect("JSON serialization failed"));
     } else {
-        error!("Failed to get stats for TID={}", ctx)
+        error!("Failed to get stats for TID={}", ctx);
     }
 }
 

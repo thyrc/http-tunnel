@@ -41,11 +41,11 @@ impl Decoder for HttpTunnelCodec {
     type Error = EstablishTunnelResult;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if !got_http_request(&src) {
+        if !got_http_request(src) {
             return Ok(None);
         }
 
-        match HttpConnectRequest::parse(&src) {
+        match HttpConnectRequest::parse(src) {
             Ok(parsed_request) => match &self.enabled_targets {
                 Some(regex) if !regex.is_match(&parsed_request.uri) => {
                     warn!(

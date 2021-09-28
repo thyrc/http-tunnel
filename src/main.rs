@@ -11,8 +11,8 @@ use tokio::net::TcpListener;
 use crate::codec::{HttpTunnelCodec, HttpTunnelCodecBuilder, HttpTunnelTarget};
 use crate::config::{ProxyConfiguration, ProxyMode};
 use crate::logging::{init_logger, report_tunnel_metrics};
-use crate::target::{SimpleCachingDnsResolver, SimpleTcpConnector};
-use crate::tunnel::{ConnectionTunnel, TunnelCtxBuilder};
+use crate::target::{SimpleCachingDnsResolver, SimpleTcpConnector, TargetConnector};
+use crate::tunnel::{relay_connections, ConnectionTunnel, TunnelCtxBuilder};
 
 mod codec;
 mod config;
@@ -60,6 +60,16 @@ async fn main() -> io::Result<()> {
         ProxyMode::Http => {
             serve_plain_text(proxy_configuration, &mut tcp_listener, dns_resolver).await?;
         }
+        ProxyMode::Tcp(d) => {
+            let destination = d.clone();
+            serve_tcp(
+                proxy_configuration,
+                &mut tcp_listener,
+                dns_resolver,
+                destination,
+            )
+            .await?;
+        }
     };
 
     info!("Proxy stopped");
@@ -85,6 +95,69 @@ async fn serve_plain_text(
                 let config = config.clone();
                 // handle accepted connections asynchronously
                 tokio::spawn(async move { tunnel_stream(&config, stream, dns_resolver_ref).await });
+            }
+            Err(e) => error!("Failed TCP handshake {}", e),
+        }
+    }
+}
+
+async fn serve_tcp(
+    config: ProxyConfiguration,
+    listener: &mut TcpListener,
+    dns_resolver: DnsResolver,
+    destination: String,
+) -> io::Result<()> {
+    info!("Serving requests on: {}", config.bind_address);
+    loop {
+        // Asynchronously wait for an inbound socket.
+        let socket = listener.accept().await;
+
+        let dns_resolver_ref = dns_resolver.clone();
+        let destination_copy = destination.clone();
+        let config_copy = config.clone();
+
+        match socket {
+            Ok((stream, _)) => {
+                let config = config.clone();
+                stream.nodelay().unwrap_or_default();
+                // handle accepted connections asynchronously
+                tokio::spawn(async move {
+                    let ctx = TunnelCtxBuilder::default()
+                        .id(thread_rng().gen::<u128>())
+                        .build()
+                        .expect("TunnelCtxBuilder failed");
+
+                    let mut connector: SimpleTcpConnector<HttpTunnelTarget, DnsResolver> =
+                        SimpleTcpConnector::new(
+                            dns_resolver_ref,
+                            config.tunnel_config.target_connection.connect_timeout,
+                            ctx,
+                        );
+
+                    match connector
+                        .connect(&HttpTunnelTarget {
+                            target: destination_copy,
+                            nugget: None,
+                        })
+                        .await
+                    {
+                        Ok(destination) => {
+                            let stats = relay_connections(
+                                stream,
+                                destination,
+                                ctx,
+                                config_copy.tunnel_config.client_connection.relay_policy,
+                                config_copy.tunnel_config.target_connection.relay_policy,
+                            )
+                            .await;
+
+                            if config.metrics_enabled {
+                                report_tunnel_metrics(ctx, stats);
+                            }
+                        }
+                        Err(e) => error!("Failed to establish TCP upstream connection {:?}", e),
+                    }
+                });
             }
             Err(e) => error!("Failed TCP handshake {}", e),
         }
@@ -129,7 +202,9 @@ async fn tunnel_stream<C: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
         .start()
         .await;
 
-    report_tunnel_metrics(ctx, stats);
+    if config.metrics_enabled {
+        report_tunnel_metrics(ctx, stats);
+    }
 
     Ok(())
 }

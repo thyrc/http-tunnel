@@ -1,4 +1,4 @@
-use clap::clap_app;
+use clap::{App, Arg};
 use regex::Regex;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
@@ -44,6 +44,7 @@ pub struct TunnelConfig {
 #[derive(Clone, Debug)]
 pub enum ProxyMode {
     Http,
+    Tcp(String),
 }
 
 #[derive(Clone, Builder, Debug)]
@@ -52,6 +53,7 @@ pub struct ProxyConfiguration {
     pub bind_address: String,
     pub tunnel_config: TunnelConfig,
     pub log_config_file: Option<String>,
+    pub metrics_enabled: bool,
 }
 
 impl Default for TunnelConfig {
@@ -84,9 +86,7 @@ impl Default for TunnelConfig {
 
 impl TunnelConfig {
     fn build_allowed_targets(mut self) -> Result<TunnelConfig, regex::Error> {
-        if self.target_connection.allowed.is_empty() {
-            Ok(self)
-        } else {
+        if !self.target_connection.allowed.is_empty() {
             let with_port = Regex::new(":[0-9]+$").expect("BUG: Bad port regex");
             let mut vec = Vec::new();
             let mut host: String;
@@ -113,37 +113,84 @@ impl TunnelConfig {
             let targets = "^(?i)(".to_owned() + &vec.join("|") + &")$".to_owned();
 
             self.target_connection.allowed_targets = Some(Regex::new(&targets)?);
-
-            Ok(self)
         }
+        Ok(self)
     }
 }
 
 impl ProxyConfiguration {
     pub fn from_command_line() -> io::Result<ProxyConfiguration> {
-        let matches = clap_app!(myapp =>
-            (name: "Simple HTTP(S) Tunnel")
-            (version: env!("CARGO_PKG_VERSION"))
-            (author: env!("CARGO_PKG_AUTHORS"))
-            (about: "A simple HTTP(S) tunnel")
-            (@arg CONFIG: --config +takes_value "Configuration file")
-            (@arg LOG: --log +takes_value "Log configuration file")
-            (@arg BIND: --bind +required +takes_value "Bind address, e.g. 0.0.0.0:8443")
-        )
-        .get_matches();
-
+        let matches = App::new("Simple HTTP(S) Tunnel")
+            .version(env!("CARGO_PKG_VERSION"))
+            .author(env!("CARGO_PKG_AUTHORS"))
+            .about("A simple HTTP(S) tunnel")
+            .arg(
+                Arg::with_name("CONFIG")
+                    .short("c")
+                    .long("config")
+                    .value_name("FILE")
+                    .help("Configuration file")
+                    .takes_value(true),
+            )
+            .arg(
+                Arg::with_name("LOG")
+                    .long("log")
+                    .value_name("FILE")
+                    .help("Log configuration file")
+                    .takes_value(true),
+            )
+            .arg(
+                Arg::with_name("METRICS")
+                    .long("metrics")
+                    .value_name("METRICS")
+                    .help("Gather runtime metrics via the `metrics` appender")
+                    .takes_value(false),
+            )
+            .arg(
+                Arg::with_name("TCP")
+                    .long("tcp")
+                    .requires("DEST")
+                    .help("Enable TCP mode"),
+            )
+            .arg(
+                Arg::with_name("BIND")
+                    .long("bind")
+                    .required(true)
+                    .value_name("ADDRESS")
+                    .help("Bind address, e.g. 0.0.0.0:8443")
+                    .takes_value(true),
+            )
+            .arg(
+                Arg::with_name("DEST")
+                    .short("d")
+                    .long("destination")
+                    .value_name("ADDRESS")
+                    .help("Destination address for TCP mode, e.g. moepmoep.com:8118")
+                    .takes_value(true),
+            )
+            .get_matches();
         let config = matches.value_of("CONFIG");
 
         let log_config_file = matches
             .value_of("LOG")
             .map(std::string::ToString::to_string);
 
+        let metrics_enabled = matches.is_present("METRICS");
+
         let bind_address = matches
             .value_of("BIND")
             .expect("missing bind address")
             .to_string();
 
-        let mode = ProxyMode::Http;
+        let mode = if matches.is_present("TCP") {
+            let destination = matches
+                .value_of("DEST")
+                .expect("misconfiguration for destination")
+                .to_string();
+            ProxyMode::Tcp(destination)
+        } else {
+            ProxyMode::Http
+        };
 
         let tunnel_config = match config {
             None => TunnelConfig::default(),
@@ -155,6 +202,7 @@ impl ProxyConfiguration {
             .mode(mode)
             .tunnel_config(tunnel_config)
             .log_config_file(log_config_file)
+            .metrics_enabled(metrics_enabled)
             .build()
             .expect("ProxyConfigurationBuilder failed"))
     }

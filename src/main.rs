@@ -1,18 +1,15 @@
 #[macro_use]
-extern crate derive_builder;
-#[macro_use]
 extern crate serde_derive;
 
 use log::{debug, error, info};
-use rand::{thread_rng, Rng};
 use tokio::io::{self, AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 
-use crate::codec::{HttpTunnelCodec, HttpTunnelCodecBuilder, HttpTunnelTarget};
+use crate::codec::{HttpTunnelCodec, HttpTunnelTarget};
 use crate::config::{ProxyConfiguration, ProxyMode};
 use crate::logging::{init_logger, report_tunnel_metrics};
 use crate::target::{SimpleCachingDnsResolver, SimpleTcpConnector, TargetConnector};
-use crate::tunnel::{relay_connections, ConnectionTunnel, TunnelCtxBuilder};
+use crate::tunnel::{relay_connections, ConnectionTunnel, TunnelCtx};
 
 mod codec;
 mod config;
@@ -26,11 +23,15 @@ type DnsResolver = SimpleCachingDnsResolver;
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let proxy_configuration = ProxyConfiguration::from_command_line().map_err(|e| {
-        println!("Failed to process parameters. See ./log/atp-tunnel.log for details");
+        println!("Failed to process parameters.");
         e
     })?;
 
-    init_logger(&proxy_configuration.log_config_file);
+    init_logger(
+        &proxy_configuration.log_file,
+        proxy_configuration.verbosity,
+        proxy_configuration.quiet,
+    )?;
 
     debug!("Starting with configuration: {:#?}", proxy_configuration);
     info!("Starting listener on: {}", proxy_configuration.bind_address);
@@ -122,10 +123,7 @@ async fn serve_tcp(
                 stream.nodelay().unwrap_or_default();
                 // handle accepted connections asynchronously
                 tokio::spawn(async move {
-                    let ctx = TunnelCtxBuilder::default()
-                        .id(thread_rng().gen::<u128>())
-                        .build()
-                        .expect("TunnelCtxBuilder failed");
+                    let ctx = TunnelCtx::new();
 
                     let mut connector: SimpleTcpConnector<HttpTunnelTarget, DnsResolver> =
                         SimpleTcpConnector::new(
@@ -172,24 +170,19 @@ async fn tunnel_stream<C: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
     client: C,
     dns_resolver: DnsResolver,
 ) -> io::Result<()> {
-    let ctx = TunnelCtxBuilder::default()
-        .id(thread_rng().gen::<u128>())
-        .build()
-        .expect("TunnelCtxBuilder failed");
+    let ctx = TunnelCtx::new();
 
     let enabled_targets = config
         .tunnel_config
         .target_connection
         .allowed_targets
-        .as_ref()
-        .cloned();
+        .clone();
 
     // here it can be any codec.
-    let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
-        .tunnel_ctx(ctx)
-        .enabled_targets(enabled_targets)
-        .build()
-        .expect("HttpTunnelCodecBuilder failed");
+    let codec: HttpTunnelCodec = HttpTunnelCodec {
+        tunnel_ctx: ctx,
+        enabled_targets,
+    };
 
     // any `TargetConnector` would do.
     let connector: SimpleTcpConnector<HttpTunnelTarget, DnsResolver> = SimpleTcpConnector::new(

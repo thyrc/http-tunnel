@@ -1,7 +1,10 @@
+#![allow(clippy::module_name_repetitions)]
+
 use core::fmt;
 use futures::stream::SplitStream;
 use futures::{SinkExt, StreamExt};
 use log::{debug, error};
+use rand::{thread_rng, Rng};
 use std::fmt::Display;
 use std::time::Duration;
 use tokio::io::{self, AsyncRead, AsyncWrite};
@@ -9,7 +12,7 @@ use tokio::time::timeout;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
 use crate::config::TunnelConfig;
-use crate::relay::{Relay, RelayBuilder, RelayPolicy, RelayStats};
+use crate::relay::{Relay, RelayPolicy, RelayStats};
 use crate::target::{Nugget, TargetConnector};
 
 #[derive(Eq, PartialEq, Debug, Clone, Serialize)]
@@ -65,14 +68,22 @@ pub trait TunnelTarget {
 }
 
 /// We need to be able to trace events in logs/metrics.
-#[derive(Builder, Copy, Clone, Default, Serialize)]
+#[derive(Copy, Clone, Default, Serialize)]
 pub struct TunnelCtx {
     /// We can easily extend it, if necessary. For now just a random u128.
     id: u128,
 }
 
+impl TunnelCtx {
+    pub fn new() -> Self {
+        TunnelCtx {
+            id: thread_rng().gen::<u128>(),
+        }
+    }
+}
+
 /// Statistics
-#[derive(Serialize, Builder)]
+#[derive(Serialize)]
 pub struct TunnelStats {
     tunnel_ctx: TunnelCtx,
     result: EstablishTunnelResult,
@@ -274,25 +285,26 @@ pub async fn relay_connections<
     let (client_recv, client_send) = io::split(client);
     let (target_recv, target_send) = io::split(target);
 
-    let downstream_relay: Relay = RelayBuilder::default()
-        .name("Downstream")
-        .tunnel_ctx(ctx)
-        .relay_policy(downstream_relay_policy)
-        .build()
-        .expect("RelayBuilder failed");
+    let downstream_relay: Relay = Relay {
+        name: "Downstream",
+        tunnel_ctx: ctx,
+        relay_policy: downstream_relay_policy,
+    };
 
-    let upstream_relay: Relay = RelayBuilder::default()
-        .name("Upstream")
-        .tunnel_ctx(ctx)
-        .relay_policy(upstream_relay_policy)
-        .build()
-        .expect("RelayBuilder failed");
+    let upstream_relay: Relay = Relay {
+        name: "Upstream",
+        tunnel_ctx: ctx,
+        relay_policy: upstream_relay_policy,
+    };
 
-    let upstream_task =
-        tokio::spawn(async move { downstream_relay.relay_data(client_recv, target_send).await });
+    let upstream_task = tokio::spawn(async move {
+        Box::pin(downstream_relay.relay_data(client_recv, target_send)).await
+    });
 
     let downstream_task =
-        tokio::spawn(async move { upstream_relay.relay_data(target_recv, client_send).await });
+        tokio::spawn(
+            async move { Box::pin(upstream_relay.relay_data(target_recv, client_send)).await },
+        );
 
     let downstream_stats = downstream_task.await??;
     let upstream_stats = upstream_task.await??;
@@ -315,7 +327,6 @@ impl fmt::Display for TunnelCtx {
 mod test {
     extern crate tokio;
 
-    use async_trait::async_trait;
     use std::time::Duration;
 
     use tokio::io;
@@ -325,11 +336,10 @@ mod test {
     use crate::relay::RelayPolicy;
 
     use self::tokio::io::{AsyncWriteExt, Error, ErrorKind};
-    use crate::codec::{HttpTunnelCodec, HttpTunnelCodecBuilder, HttpTunnelTarget};
+    use crate::codec::{HttpTunnelCodec, HttpTunnelTarget};
     use crate::config::{ClientConnectionConfig, TargetConnectionConfig, TunnelConfig};
     use crate::target::TargetConnector;
-    use crate::tunnel::{ConnectionTunnel, EstablishTunnelResult, TunnelCtxBuilder, TunnelTarget};
-    use rand::{thread_rng, Rng};
+    use crate::tunnel::{ConnectionTunnel, EstablishTunnelResult, TunnelCtx, TunnelTarget};
     use regex::Regex;
 
     #[tokio::test]
@@ -351,16 +361,12 @@ mod test {
             .read(tunneled_response)
             .build();
 
-        let ctx = TunnelCtxBuilder::default()
-            .id(thread_rng().gen::<u128>())
-            .build()
-            .expect("TunnelCtxBuilder failed");
+        let ctx = TunnelCtx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
-            .tunnel_ctx(ctx)
-            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
-            .build()
-            .expect("ConnectRequestCodecBuilder failed");
+        let codec: HttpTunnelCodec = HttpTunnelCodec {
+            tunnel_ctx: ctx,
+            enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
+        };
 
         let connector = MockTargetConnector {
             target: "foo.bar:80".to_string(),
@@ -406,16 +412,12 @@ mod test {
             .read(tunneled_response)
             .build();
 
-        let ctx = TunnelCtxBuilder::default()
-            .id(thread_rng().gen::<u128>())
-            .build()
-            .expect("TunnelCtxBuilder failed");
+        let ctx = TunnelCtx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
-            .tunnel_ctx(ctx)
-            .enabled_targets(Some(Regex::new(r"foo\.bar:443").unwrap()))
-            .build()
-            .expect("ConnectRequestCodecBuilder failed");
+        let codec: HttpTunnelCodec = HttpTunnelCodec {
+            tunnel_ctx: ctx,
+            enabled_targets: Some(Regex::new(r"foo\.bar:443").unwrap()),
+        };
 
         let connector = MockTargetConnector {
             target: "foo.bar:443".to_string(),
@@ -453,16 +455,12 @@ mod test {
             .write(handshake_response)
             .build();
 
-        let ctx = TunnelCtxBuilder::default()
-            .id(thread_rng().gen::<u128>())
-            .build()
-            .expect("TunnelCtxBuilder failed");
+        let ctx = TunnelCtx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
-            .tunnel_ctx(ctx)
-            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
-            .build()
-            .expect("HttpTunnelCodecBuilder failed");
+        let codec: HttpTunnelCodec = HttpTunnelCodec {
+            tunnel_ctx: ctx,
+            enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
+        };
 
         let connector = MockTargetConnector {
             target: "foo.bar:80".to_string(),
@@ -496,16 +494,12 @@ mod test {
 
         let target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtxBuilder::default()
-            .id(thread_rng().gen::<u128>())
-            .build()
-            .expect("TunnelCtxBuilder failed");
+        let ctx = TunnelCtx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
-            .tunnel_ctx(ctx)
-            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
-            .build()
-            .expect("HttpTunnelCodecBuilder failed");
+        let codec: HttpTunnelCodec = HttpTunnelCodec {
+            tunnel_ctx: ctx,
+            enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
+        };
 
         let connector = MockTargetConnector {
             target: "foo.bar:80".to_string(),
@@ -540,16 +534,12 @@ mod test {
 
         let target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtxBuilder::default()
-            .id(thread_rng().gen::<u128>())
-            .build()
-            .expect("TunnelCtxBuilder failed");
+        let ctx = TunnelCtx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
-            .tunnel_ctx(ctx)
-            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
-            .build()
-            .expect("HttpTunnelCodecBuilder failed");
+        let codec: HttpTunnelCodec = HttpTunnelCodec {
+            tunnel_ctx: ctx,
+            enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
+        };
 
         let connector = MockTargetConnector {
             target: "foo.bar:80".to_string(),
@@ -584,16 +574,12 @@ mod test {
 
         let target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtxBuilder::default()
-            .id(thread_rng().gen::<u128>())
-            .build()
-            .expect("TunnelCtxBuilder failed");
+        let ctx = TunnelCtx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
-            .tunnel_ctx(ctx)
-            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
-            .build()
-            .expect("HttpTunnelCodecBuilder failed");
+        let codec: HttpTunnelCodec = HttpTunnelCodec {
+            tunnel_ctx: ctx,
+            enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
+        };
 
         let connector = MockTargetConnector {
             target: "foo.bar:80".to_string(),
@@ -628,16 +614,12 @@ mod test {
 
         let _target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtxBuilder::default()
-            .id(thread_rng().gen::<u128>())
-            .build()
-            .expect("TunnelCtxBuilder failed");
+        let ctx = TunnelCtx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
-            .tunnel_ctx(ctx)
-            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
-            .build()
-            .expect("HttpTunnelCodecBuilder failed");
+        let codec: HttpTunnelCodec = HttpTunnelCodec {
+            tunnel_ctx: ctx,
+            enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
+        };
 
         let connector = MockTargetConnector {
             target: "foo.bar:80".to_string(),
@@ -672,16 +654,12 @@ mod test {
 
         let _target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtxBuilder::default()
-            .id(thread_rng().gen::<u128>())
-            .build()
-            .expect("TunnelCtxBuilder failed");
+        let ctx = TunnelCtx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
-            .tunnel_ctx(ctx)
-            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
-            .build()
-            .expect("HttpTunnelCodecBuilder failed");
+        let codec: HttpTunnelCodec = HttpTunnelCodec {
+            tunnel_ctx: ctx,
+            enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
+        };
 
         let connector = MockTargetConnector {
             target: "foo.bar:80".to_string(),
@@ -717,16 +695,12 @@ mod test {
 
         let _target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtxBuilder::default()
-            .id(thread_rng().gen::<u128>())
-            .build()
-            .expect("TunnelCtxBuilder failed");
+        let ctx = TunnelCtx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodecBuilder::default()
-            .tunnel_ctx(ctx)
-            .enabled_targets(Some(Regex::new(r"foo\.bar:80").unwrap()))
-            .build()
-            .expect("HttpTunnelCodecBuilder failed");
+        let codec: HttpTunnelCodec = HttpTunnelCodec {
+            tunnel_ctx: ctx,
+            enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
+        };
 
         let connector = MockTargetConnector {
             target: "foo.bar:80".to_string(),
@@ -750,7 +724,7 @@ mod test {
     }
 
     fn build_config(default_timeout: Duration) -> TunnelConfig {
-        let config = TunnelConfig {
+        TunnelConfig {
             client_connection: ClientConnectionConfig {
                 initiation_timeout: default_timeout,
                 relay_policy: RelayPolicy {
@@ -771,8 +745,7 @@ mod test {
                     max_rate_bps: 170310180,
                 },
             },
-        };
-        config
+        }
     }
 
     struct MockTargetConnector {
@@ -782,7 +755,6 @@ mod test {
         error: Option<ErrorKind>,
     }
 
-    #[async_trait]
     impl TargetConnector for MockTargetConnector {
         type Target = HttpTunnelTarget;
         type Stream = Mock;

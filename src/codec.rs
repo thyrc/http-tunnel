@@ -1,3 +1,5 @@
+#![allow(clippy::module_name_repetitions)]
+
 use bytes::BytesMut;
 use core::fmt;
 use log::{debug, warn};
@@ -21,7 +23,7 @@ struct HttpConnectRequest {
     nugget: Option<Nugget>,
 }
 
-#[derive(Builder, Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone)]
 pub struct HttpTunnelTarget {
     pub target: String,
     pub nugget: Option<Nugget>,
@@ -30,10 +32,10 @@ pub struct HttpTunnelTarget {
 }
 
 /// Codec to extract `HTTP/1.1 CONNECT` requests and build a corresponding `HTTP` response.
-#[derive(Clone, Builder)]
+#[derive(Clone)]
 pub struct HttpTunnelCodec {
-    tunnel_ctx: TunnelCtx,
-    enabled_targets: Option<Regex>,
+    pub tunnel_ctx: TunnelCtx,
+    pub enabled_targets: Option<Regex>,
 }
 
 impl Decoder for HttpTunnelCodec {
@@ -54,13 +56,10 @@ impl Decoder for HttpTunnelCodec {
                     );
                     Err(EstablishTunnelResult::Forbidden)
                 }
-                _ => Ok(Some(
-                    HttpTunnelTargetBuilder::default()
-                        .target(parsed_request.uri)
-                        .nugget(parsed_request.nugget)
-                        .build()
-                        .expect("HttpTunnelTargetBuilder failed"),
-                )),
+                _ => Ok(Some(HttpTunnelTarget {
+                    target: parsed_request.uri,
+                    nugget: parsed_request.nugget,
+                })),
             },
             Err(e) => Err(e),
         }
@@ -91,7 +90,8 @@ impl Encoder<EstablishTunnelResult> for HttpTunnelCodec {
             EstablishTunnelResult::GatewayTimeout => (504, "GATEWAY_TIMEOUT"),
         };
 
-        dst.write_fmt(format_args!("HTTP/1.1 {} {}\r\n\r\n", code as u32, message))
+        #[allow(clippy::cast_sign_loss)]
+        dst.write_fmt(format_args!("HTTP/1.1 {} {message}\r\n\r\n", code as u32))
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))
     }
 }
@@ -130,8 +130,7 @@ fn got_http_request(buffer: &BytesMut) -> bool {
     buffer.len() >= MAX_HTTP_REQUEST_SIZE
         || buffer
             .windows(REQUEST_END_MARKER.len())
-            .find(|w| *w == REQUEST_END_MARKER)
-            .is_some()
+            .any(|w| w == REQUEST_END_MARKER)
 }
 
 impl From<Error> for EstablishTunnelResult {
@@ -244,6 +243,7 @@ impl HttpConnectRequest {
         }
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     #[cfg(feature = "plain_text")]
     fn check_method(method: &str) -> Result<bool, EstablishTunnelResult> {
         Ok(method != "CONNECT")
@@ -284,14 +284,14 @@ mod tests {
     use tokio_util::codec::{Decoder, Encoder};
 
     use crate::codec::{
-        EstablishTunnelResult, HttpTunnelCodec, HttpTunnelCodecBuilder, HttpTunnelTargetBuilder,
-        MAX_HTTP_REQUEST_SIZE, REQUEST_END_MARKER,
+        EstablishTunnelResult, HttpTunnelCodec, HttpTunnelTarget, MAX_HTTP_REQUEST_SIZE,
+        REQUEST_END_MARKER,
     };
     #[cfg(feature = "plain_text")]
     use crate::target::Nugget;
     #[cfg(feature = "plain_text")]
     use crate::tunnel::EstablishTunnelResult::Forbidden;
-    use crate::tunnel::TunnelCtxBuilder;
+    use crate::tunnel::TunnelCtx;
 
     #[test]
     fn test_got_http_request_partial() {
@@ -317,13 +317,10 @@ mod tests {
 
         assert_eq!(
             result,
-            Ok(Some(
-                HttpTunnelTargetBuilder::default()
-                    .target("foo.bar.com:443".to_string())
-                    .nugget(None)
-                    .build()
-                    .unwrap(),
-            ))
+            Ok(Some(HttpTunnelTarget {
+                target: "foo.bar.com:443".to_string(),
+                nugget: None
+            }))
         );
     }
 
@@ -505,7 +502,7 @@ mod tests {
         let bad_requests = [
             "bad request\r\n\r\n",                       // 2 tokens
             "yet another bad request\r\n\r\n",           // 4 tokens
-            "CONNECT foo.bar.cøm:443 HTTP/1.1\r\n\r\n", // non-ascii
+            "CONNECT foo.bar.cøm:443 HTTP/1.1\r\n\r\n",  // non-ascii
             "CONNECT  foo.bar.com:443 HTTP/1.1\r\n\r\n", // double-space
             "CONNECT foo.bar.com:443\tHTTP/1.1\r\n\r\n", // CTL
         ];
@@ -566,12 +563,11 @@ mod tests {
     }
 
     fn build_codec() -> HttpTunnelCodec {
-        let ctx = TunnelCtxBuilder::default().id(1).build().unwrap();
+        let ctx = TunnelCtx::new();
 
-        HttpTunnelCodecBuilder::default()
-            .tunnel_ctx(ctx)
-            .enabled_targets(Some(Regex::new(r"foo\.bar\.com:(443|80)").unwrap()))
-            .build()
-            .unwrap()
+        HttpTunnelCodec {
+            tunnel_ctx: ctx,
+            enabled_targets: Some(Regex::new(r"foo\.bar\.com:(443|80)").unwrap()),
+        }
     }
 }

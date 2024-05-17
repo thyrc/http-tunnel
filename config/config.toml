@@ -1,0 +1,21 @@
+[client_connection]
+  initiation_timeout = "60s"
+
+[client_connection.relay_policy]
+  idle_timeout = "180s"
+  min_rate_bpm = 0
+  max_rate_bps = 10_000_000_000
+
+[target_connection]
+  dns_cache_ttl = "900s"
+
+  connect_timeout = "120s"
+  allowed = [
+    "www.rust-lang.org",
+    "https://www.rust-lang.org",
+  ]
+
+[target_connection.relay_policy]
+  idle_timeout = "180s"
+  min_rate_bpm = 0
+  max_rate_bps = 10_000_000_000

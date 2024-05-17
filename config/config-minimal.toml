@@ -1,0 +1,7 @@
+[client_connection]
+
+[target_connection]
+  allowed = [
+    "www.rust-lang.org",
+    "https://www.rust-lang.org",
+  ]

@@ -1,4 +1,5 @@
-use async_trait::async_trait;
+#![allow(clippy::module_name_repetitions)]
+
 use log::{debug, error, info, warn};
 use rand::prelude::thread_rng;
 use rand::Rng;
@@ -16,7 +17,6 @@ use tokio::time::Duration;
 
 use crate::tunnel::{TunnelCtx, TunnelTarget};
 
-#[async_trait]
 pub trait TargetConnector {
     type Target: TunnelTarget + Send + Sync + Sized;
     type Stream: AsyncRead + AsyncWrite + Send + Sized + 'static;
@@ -24,7 +24,6 @@ pub trait TargetConnector {
     async fn connect(&mut self, target: &Self::Target) -> io::Result<Self::Stream>;
 }
 
-#[async_trait]
 pub trait DnsResolver {
     async fn resolve(&mut self, target: &str) -> io::Result<SocketAddr>;
 }
@@ -58,7 +57,6 @@ pub struct SimpleCachingDnsResolver {
     ipv4: bool,
 }
 
-#[async_trait]
 impl<D, R> TargetConnector for SimpleTcpConnector<D, R>
 where
     D: TunnelTarget<Addr = String> + Send + Sync + Sized,
@@ -106,7 +104,6 @@ where
     }
 }
 
-#[async_trait]
 impl DnsResolver for SimpleCachingDnsResolver {
     async fn resolve(&mut self, target: &str) -> io::Result<SocketAddr> {
         match self.try_find(target).await {
@@ -125,7 +122,7 @@ where
             dns_resolver,
             connect_timeout,
             tunnel_ctx,
-            _phantom_target: std::marker::PhantomData::default(),
+            _phantom_target: std::marker::PhantomData,
         }
     }
 }

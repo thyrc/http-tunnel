@@ -36,16 +36,6 @@ async fn main() -> io::Result<()> {
     debug!("Starting with configuration: {:#?}", proxy_configuration);
     info!("Starting listener on: {}", proxy_configuration.bind_address);
 
-    let mut tcp_listener = TcpListener::bind(&proxy_configuration.bind_address)
-        .await
-        .map_err(|e| {
-            error!(
-                "Error binding address {}: {}",
-                &proxy_configuration.bind_address, e
-            );
-            e
-        })?;
-
     let dns_resolver = SimpleCachingDnsResolver::new(
         proxy_configuration
             .tunnel_config
@@ -59,17 +49,11 @@ async fn main() -> io::Result<()> {
 
     match &proxy_configuration.mode {
         ProxyMode::Http => {
-            serve_plain_text(proxy_configuration, &mut tcp_listener, dns_resolver).await?;
+            serve_plain_text(proxy_configuration, dns_resolver).await?;
         }
         ProxyMode::Tcp(d) => {
             let destination = d.clone();
-            serve_tcp(
-                proxy_configuration,
-                &mut tcp_listener,
-                dns_resolver,
-                destination,
-            )
-            .await?;
+            serve_tcp(proxy_configuration, dns_resolver, destination).await?;
         }
     };
 
@@ -78,12 +62,23 @@ async fn main() -> io::Result<()> {
     Ok(())
 }
 
-async fn serve_plain_text(
-    config: ProxyConfiguration,
-    listener: &mut TcpListener,
-    dns_resolver: DnsResolver,
-) -> io::Result<()> {
-    info!("Serving requests on: {}", config.bind_address);
+async fn start_listening_tcp(config: &ProxyConfiguration) -> Result<TcpListener, std::io::Error> {
+    let bind_address = &config.bind_address;
+
+    match TcpListener::bind(bind_address).await {
+        Ok(s) => {
+            info!("Serving requests on: {bind_address}");
+            Ok(s)
+        }
+        Err(e) => {
+            error!("Error binding TCP socket {bind_address}: {e}");
+            Err(e)
+        }
+    }
+}
+
+async fn serve_plain_text(config: ProxyConfiguration, dns_resolver: DnsResolver) -> io::Result<()> {
+    let listener = start_listening_tcp(&config).await?;
     loop {
         // Asynchronously wait for an inbound socket.
         let socket = listener.accept().await;
@@ -104,11 +99,11 @@ async fn serve_plain_text(
 
 async fn serve_tcp(
     config: ProxyConfiguration,
-    listener: &mut TcpListener,
     dns_resolver: DnsResolver,
     destination: String,
 ) -> io::Result<()> {
-    info!("Serving requests on: {}", config.bind_address);
+    let listener = start_listening_tcp(&config).await?;
+
     loop {
         // Asynchronously wait for an inbound socket.
         let socket = listener.accept().await;

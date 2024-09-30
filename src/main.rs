@@ -92,7 +92,7 @@ async fn serve_plain_text(config: ProxyConfiguration, dns_resolver: DnsResolver)
                 // handle accepted connections asynchronously
                 tokio::spawn(async move { tunnel_stream(&config, stream, dns_resolver_ref).await });
             }
-            Err(e) => error!("Failed TCP handshake {}", e),
+            Err(e) => error!("Failed TCP handshake {e}"),
         }
     }
 }
@@ -152,7 +152,7 @@ async fn serve_tcp(
                     }
                 });
             }
-            Err(e) => error!("Failed TCP handshake {}", e),
+            Err(e) => error!("Failed TCP handshake {e}"),
         }
     }
 }

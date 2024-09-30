@@ -1,14 +1,29 @@
 #![allow(clippy::module_name_repetitions)]
 
-use clap::{Arg, ArgAction, Command};
 use regex::Regex;
 use std::fs;
-use std::io::{Error, ErrorKind};
+use std::process;
 use std::time::Duration;
-use tokio::io;
 use toml::from_str;
 
 use crate::relay::{RelayPolicy, NO_BANDWIDTH_LIMIT, NO_TIMEOUT};
+
+const HELP: &str = "\
+A simple HTTP(S) tunnel
+
+Usage: http-tunnel [OPTIONS] --bind <ADDRESS>
+
+Options:
+  -c, --config <FILE>          Configuration file
+      --log <FILE>             Log file
+  -q, --quiet
+  -v, --verbose...             Sets the level of verbosity
+      --metrics                Gather runtime metrics
+      --tcp                    Enable TCP mode
+      --bind <ADDRESS>         Bind address, e.g. 0.0.0.0:8443
+  -d, --destination <ADDRESS>  Destination address for TCP mode, e.g. moepmoep.com:8118
+  -h, --help                   Print help information (use `--help` for more detail)
+  -V, --version                Print version information";
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct ClientConnectionConfig {
@@ -128,146 +143,121 @@ impl TunnelConfig {
 }
 
 impl ProxyConfiguration {
-    #[allow(clippy::too_many_lines)]
-    pub fn from_command_line() -> io::Result<ProxyConfiguration> {
-        let matches = Command::new("Simple HTTP(S) Tunnel")
-            .version(env!("CARGO_PKG_VERSION"))
-            .author(env!("CARGO_PKG_AUTHORS"))
-            .about("A simple HTTP(S) tunnel")
-            .arg(
-                Arg::new("CONFIG")
-                    .short('c')
-                    .long("config")
-                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
-                    .value_name("FILE")
-                    .help("Configuration file")
-                    .num_args(1),
-            )
-            .arg(
-                Arg::new("LOG")
-                    .long("log")
-                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
-                    .value_name("FILE")
-                    .help("Log file")
-                    .num_args(1),
-            )
-            .arg(
-                Arg::new("QUIET")
-                    .short('q')
-                    .long("quiet")
-                    .action(ArgAction::SetTrue)
-                    .conflicts_with("VERBOSE"),
-            )
-            .arg(
-                Arg::new("VERBOSE")
-                    .short('v')
-                    .long("verbose")
-                    .action(ArgAction::Count)
-                    .conflicts_with("QUIET")
-                    .conflicts_with("METRICS")
-                    .help("Sets the level of verbosity")
-                    .long_help(
-                        "-v for log level INFO
--vv for log level DEBUG
-more for TRACE log level",
-                    ),
-            )
-            .arg(
-                Arg::new("METRICS")
-                    .long("metrics")
-                    .action(ArgAction::SetTrue)
-                    .help("Gather runtime metrics"),
-            )
-            .arg(
-                Arg::new("TCP")
-                    .long("tcp")
-                    .action(ArgAction::SetTrue)
-                    .requires("DEST")
-                    .help("Enable TCP mode"),
-            )
-            .arg(
-                Arg::new("BIND")
-                    .long("bind")
-                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
-                    .required(true)
-                    .value_name("ADDRESS")
-                    .help("Bind address, e.g. 0.0.0.0:8443")
-                    .num_args(1),
-            )
-            .arg(
-                Arg::new("DEST")
-                    .short('d')
-                    .long("destination")
-                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
-                    .value_name("ADDRESS")
-                    .help("Destination address for TCP mode, e.g. moepmoep.com:8118")
-                    .num_args(1),
-            )
-            .get_matches();
-        let config = matches.get_one("CONFIG").map(std::string::String::as_str);
-
-        let log_file = matches
-            .get_one::<String>("LOG")
-            .map(std::string::ToString::to_string);
-
-        let metrics_enabled = matches.get_flag("METRICS");
-
-        let verbosity = matches
-            .get_one::<u8>("VERBOSE")
-            .expect("Count always defaulted");
-
-        let quiet = matches.get_flag("QUIET");
-
-        let bind_address = matches
-            .get_one("BIND")
-            .map(std::string::String::as_str)
-            .expect("missing bind address")
-            .to_string();
-
-        let mode = if matches.get_flag("TCP") {
-            let destination = matches
-                .get_one("DEST")
-                .map(std::string::String::as_str)
-                .expect("misconfiguration for destination")
-                .to_string();
-            ProxyMode::Tcp(destination)
-        } else {
-            ProxyMode::Http
-        };
-
-        let tunnel_config = match config {
-            None => TunnelConfig::default(),
-            Some(config) => ProxyConfiguration::read_tunnel_config(config)?,
-        };
-
-        Ok(ProxyConfiguration {
-            bind_address,
-            mode,
-            tunnel_config,
-            verbosity: *verbosity,
-            quiet,
-            log_file,
-            metrics_enabled,
-        })
-    }
-
-    fn read_tunnel_config(filename: &str) -> io::Result<TunnelConfig> {
-        let tomlfile = fs::read_to_string(filename).map_err(|e| {
-            eprintln!("Error reading file {filename}: {e}");
-            e
-        })?;
-
-        let result: TunnelConfig = from_str(&tomlfile).map_err(|e| {
-            eprintln!("Error parsing toml {filename}: {e}");
-            Error::from(ErrorKind::InvalidInput)
-        })?;
-
-        match result.build_allowed_targets() {
-            Ok(tunnelconfig) => Ok(tunnelconfig),
+    pub fn from_command_line() -> ProxyConfiguration {
+        match parse_args() {
+            Ok(args) => args,
             Err(e) => {
-                eprintln!("Could not build list of allowed targets: {e}");
-                Err(Error::from(ErrorKind::InvalidInput))
+                eprintln!("ERROR: {e}");
+                process::exit(1);
             }
         }
     }
+
+    fn read_tunnel_config(filename: &str) -> TunnelConfig {
+        let tomlfile = match fs::read_to_string(filename) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error reading file: {e}");
+                process::exit(1);
+            }
+        };
+
+        let result: TunnelConfig = match from_str(&tomlfile) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error parsing toml {filename}: {e}");
+                process::exit(1);
+            }
+        };
+
+        match result.build_allowed_targets() {
+            Ok(tunnelconfig) => tunnelconfig,
+            Err(e) => {
+                eprintln!("Could not build list of allowed targets: {e}");
+                process::exit(1);
+            }
+        }
+    }
+}
+
+fn parse_args() -> Result<ProxyConfiguration, lexopt::Error> {
+    use lexopt::prelude::*;
+
+    let mut config = None;
+    let mut log_file = None;
+    let mut quiet = false;
+    let mut verbosity = 0;
+    let mut metrics_enabled = false;
+    let mut tcp = false;
+    let mut bind_address = String::new();
+    let mut destination = String::new();
+    let mut mode = ProxyMode::Http;
+
+    let mut parser = lexopt::Parser::from_env();
+
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Short('q') | Long("quiet") => {
+                quiet = true;
+            }
+            Short('v') | Long("verbose") => {
+                verbosity += 1;
+            }
+            Short('c') | Long("config") => {
+                config = Some(parser.value()?.string()?);
+            }
+            Long("log") => {
+                log_file = Some(parser.value()?.string()?);
+            }
+            Long("metrics") => {
+                metrics_enabled = true;
+            }
+            Long("tcp") => {
+                tcp = true;
+            }
+            Long("bind") => {
+                bind_address = parser.value()?.parse()?;
+            }
+            Short('d') | Long("destination") => {
+                destination = parser.value()?.string()?;
+            }
+            Short('h') | Long("help") => {
+                println!("{HELP}");
+                process::exit(0);
+            }
+            Short('V') | Long("version") => {
+                println!("{} {}", env!("CARGO_BIN_NAME"), env!("CARGO_PKG_VERSION"));
+                process::exit(0);
+            }
+            _ => return Err(arg.unexpected()),
+        }
+    }
+
+    if bind_address.is_empty() {
+        eprintln!("--bind <ADDRESS> argument is required.");
+        process::exit(1);
+    }
+
+    let tunnel_config = match config {
+        None => TunnelConfig::default(),
+        Some(config) => ProxyConfiguration::read_tunnel_config(&config),
+    };
+
+    if tcp {
+        if destination.is_empty() {
+            eprintln!("--destination <ADDRESS> argument is required w/ --tcp.");
+            process::exit(1);
+        }
+        mode = ProxyMode::Tcp(destination);
+    }
+
+    Ok(ProxyConfiguration {
+        mode,
+        bind_address,
+        tunnel_config,
+        verbosity,
+        quiet,
+        log_file,
+        metrics_enabled,
+    })
 }

@@ -22,10 +22,7 @@ type DnsResolver = SimpleCachingDnsResolver;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let proxy_configuration = ProxyConfiguration::from_command_line().map_err(|e| {
-        println!("Failed to process parameters.");
-        e
-    })?;
+    let proxy_configuration = ProxyConfiguration::from_command_line();
 
     init_logger(
         &proxy_configuration.log_file,

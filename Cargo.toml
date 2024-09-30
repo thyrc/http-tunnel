@@ -15,7 +15,6 @@ Based on Eugene Retunsky's http-tunnel example.
 """
 
 [dependencies]
-clap = { version = "4", default-features = false, features = ["std", "help", "usage", "deprecated"] }
 regex = "1.7"
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
@@ -31,6 +30,7 @@ tokio-util = { version = "0.7", features = ["full"] }
 bytes = "1"
 futures = "0.3"
 time = "0.3"
+lexopt = "0.3.0"
 
 [dev-dependencies]
 tokio-test = "0.4"

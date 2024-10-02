@@ -337,10 +337,9 @@ mod test {
 
     use self::tokio::io::{AsyncWriteExt, Error, ErrorKind};
     use crate::codec::{HttpTunnelCodec, HttpTunnelTarget};
-    use crate::config::{ClientConnectionConfig, TargetConnectionConfig, TunnelConfig};
+    use crate::config::{ClientConnectionConfig, Regex, TargetConnectionConfig, TunnelConfig};
     use crate::target::TargetConnector;
     use crate::tunnel::{ConnectionTunnel, EstablishTunnelResult, TunnelCtx, TunnelTarget};
-    use regex::Regex;
 
     #[tokio::test]
     async fn test_tunnel_ok() {

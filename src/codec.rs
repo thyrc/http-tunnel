@@ -3,7 +3,6 @@
 use bytes::BytesMut;
 use core::fmt;
 use log::{debug, warn};
-use regex::Regex;
 use std::fmt::Write;
 use std::str::Split;
 use tokio::io::{Error, ErrorKind};
@@ -11,6 +10,8 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use crate::target::Nugget;
 use crate::tunnel::{EstablishTunnelResult, TunnelCtx, TunnelTarget};
+
+use crate::config;
 
 const REQUEST_END_MARKER: &[u8] = b"\r\n\r\n";
 /// A reasonable value to limit possible header size.
@@ -35,7 +36,7 @@ pub struct HttpTunnelTarget {
 #[derive(Clone)]
 pub struct HttpTunnelCodec {
     pub tunnel_ctx: TunnelCtx,
-    pub enabled_targets: Option<Regex>,
+    pub enabled_targets: Option<config::Regex>,
 }
 
 impl Decoder for HttpTunnelCodec {
@@ -279,8 +280,8 @@ impl HttpConnectRequest {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::Regex;
     use bytes::{BufMut, BytesMut};
-    use regex::Regex;
     use tokio_util::codec::{Decoder, Encoder};
 
     use crate::codec::{

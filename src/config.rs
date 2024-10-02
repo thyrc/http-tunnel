@@ -1,6 +1,5 @@
 #![allow(clippy::module_name_repetitions)]
 
-use regex::Regex;
 use std::fs;
 use std::process;
 use std::time::Duration;
@@ -25,6 +24,58 @@ Options:
   -h, --help                   Print help information (use `--help` for more detail)
   -V, --version                Print version information";
 
+use core::{fmt, ops};
+
+#[derive(Clone, Debug)]
+pub struct Regex(regex_lite::Regex);
+
+impl Regex {
+    pub fn new(pattern: &str) -> Result<Regex, regex_lite::Error> {
+        Ok(Regex(regex_lite::RegexBuilder::new(pattern).build()?))
+    }
+}
+
+impl ops::Deref for Regex {
+    type Target = regex_lite::Regex;
+    fn deref(&self) -> &regex_lite::Regex {
+        &self.0
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Regex {
+    fn deserialize<D>(de: D) -> Result<Regex, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{Error, Visitor};
+
+        struct RegexVisitor;
+
+        impl<'de> Visitor<'de> for RegexVisitor {
+            type Value = Regex;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a regular expression pattern")
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<Regex, E> {
+                regex_lite::Regex::new(v)
+                    .map(Regex)
+                    .map_err(|err| E::custom(err.to_string()))
+            }
+        }
+
+        de.deserialize_str(RegexVisitor)
+    }
+}
+
+impl fmt::Display for Regex {
+    /// Shows the original regular expression.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(Deserialize, Clone, Debug)]
 pub struct ClientConnectionConfig {
     #[serde(default = "default_timeout")]
@@ -42,7 +93,6 @@ pub struct TargetConnectionConfig {
     #[serde(default)]
     pub ipv4_only: bool,
     #[serde(default)]
-    #[serde(with = "serde_regex")]
     pub allowed_targets: Option<Regex>,
     #[serde(default)]
     pub allowed: Vec<String>,
@@ -109,7 +159,7 @@ impl Default for TunnelConfig {
 }
 
 impl TunnelConfig {
-    fn build_allowed_targets(mut self) -> Result<TunnelConfig, regex::Error> {
+    fn build_allowed_targets(mut self) -> Result<TunnelConfig, regex_lite::Error> {
         if !self.target_connection.allowed.is_empty() {
             let with_port = Regex::new(":[0-9]+$").expect("BUG: Bad port regex");
             let mut vec = Vec::new();

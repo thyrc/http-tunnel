@@ -1,5 +1,3 @@
-#![allow(clippy::module_name_repetitions)]
-
 use log::{debug, error, info, warn};
 use rand::prelude::thread_rng;
 use rand::Rng;
@@ -15,10 +13,10 @@ use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tokio::time::Duration;
 
-use crate::tunnel::{TunnelCtx, TunnelTarget};
+use crate::tunnel::{self, Target};
 
-pub trait TargetConnector {
-    type Target: TunnelTarget + Send + Sync + Sized;
+pub trait Connector {
+    type Target: Target + Send + Sync + Sized;
     type Stream: AsyncRead + AsyncWrite + Send + Sized + 'static;
 
     async fn connect(&mut self, target: &Self::Target) -> io::Result<Self::Stream>;
@@ -31,7 +29,7 @@ pub trait DnsResolver {
 #[derive(Clone)]
 pub struct SimpleTcpConnector<D, R: DnsResolver> {
     connect_timeout: Duration,
-    tunnel_ctx: TunnelCtx,
+    tunnel_ctx: tunnel::Ctx,
     dns_resolver: R,
     _phantom_target: PhantomData<D>,
 }
@@ -57,9 +55,9 @@ pub struct SimpleCachingDnsResolver {
     ipv4: bool,
 }
 
-impl<D, R> TargetConnector for SimpleTcpConnector<D, R>
+impl<D, R> Connector for SimpleTcpConnector<D, R>
 where
-    D: TunnelTarget<Addr = String> + Send + Sync + Sized,
+    D: Target<Addr = String> + Send + Sync + Sized,
     R: DnsResolver + Send + Sync + 'static,
 {
     type Target = D;
@@ -117,7 +115,7 @@ impl<D, R> SimpleTcpConnector<D, R>
 where
     R: DnsResolver,
 {
-    pub fn new(dns_resolver: R, connect_timeout: Duration, tunnel_ctx: TunnelCtx) -> Self {
+    pub fn new(dns_resolver: R, connect_timeout: Duration, tunnel_ctx: tunnel::Ctx) -> Self {
         Self {
             dns_resolver,
             connect_timeout,

@@ -1,5 +1,3 @@
-#![allow(clippy::module_name_repetitions)]
-
 use core::fmt;
 use log::{debug, error, info};
 use std::future::Future;
@@ -8,14 +6,13 @@ use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::time::timeout;
 
-use crate::tunnel::TunnelCtx;
+use crate::config;
+use crate::tunnel;
 
-pub const NO_TIMEOUT: Duration = Duration::from_secs(300);
-pub const NO_BANDWIDTH_LIMIT: u64 = 1_000_000_000_000_u64;
 const BUFFER_SIZE: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-pub enum RelayShutdownReasons {
+pub enum ShutdownReason {
     /// If a reader connection was gracefully closed
     GracefulShutdown,
     ReadError,
@@ -34,14 +31,14 @@ pub enum RelayShutdownReasons {
 #[derive(Clone)]
 pub struct Relay {
     pub name: &'static str,
-    pub relay_policy: RelayPolicy,
-    pub tunnel_ctx: TunnelCtx,
+    pub relay_policy: Policy,
+    pub tunnel_ctx: tunnel::Ctx,
 }
 
 /// Stats after the relay is closed. Can be used for telemetry/monitoring.
 #[derive(Clone, Debug, Serialize)]
-pub struct RelayStats {
-    pub shutdown_reason: RelayShutdownReasons,
+pub struct Stats {
+    pub shutdown_reason: ShutdownReason,
     pub total_bytes: usize,
     pub event_count: usize,
     pub duration: Duration,
@@ -51,7 +48,7 @@ pub struct RelayStats {
 /// different sorts of abuse. Currently it only checks too slow or too fast connections,
 /// which may lead to different capacity issues.
 #[derive(Clone, Debug, Deserialize)]
-pub struct RelayPolicy {
+pub struct Policy {
     #[serde(default = "default_timeout")]
     #[serde(with = "humantime_serde")]
     pub idle_timeout: Duration,
@@ -79,7 +76,7 @@ impl Relay {
         self,
         mut source: ReadHalf<R>,
         mut dest: WriteHalf<W>,
-    ) -> io::Result<RelayStats> {
+    ) -> io::Result<Stats> {
         let mut buffer = [0; BUFFER_SIZE];
 
         let mut total_bytes = 0;
@@ -94,13 +91,13 @@ impl Relay {
                 .await;
 
             if read_result.is_err() {
-                shutdown_reason = RelayShutdownReasons::ReaderTimeout;
+                shutdown_reason = ShutdownReason::ReaderTimeout;
                 break;
             }
 
             let n = match read_result.unwrap() {
                 Ok(0) => {
-                    shutdown_reason = RelayShutdownReasons::GracefulShutdown;
+                    shutdown_reason = ShutdownReason::GracefulShutdown;
                     break;
                 }
                 Ok(n) => n,
@@ -109,7 +106,7 @@ impl Relay {
                         "{} failed to read. Err = {:?}, CTX={}",
                         self.name, e, self.tunnel_ctx
                     );
-                    shutdown_reason = RelayShutdownReasons::ReadError;
+                    shutdown_reason = ShutdownReason::ReadError;
                     break;
                 }
             };
@@ -120,7 +117,7 @@ impl Relay {
                 .await;
 
             if write_result.is_err() {
-                shutdown_reason = RelayShutdownReasons::WriterTimeout;
+                shutdown_reason = ShutdownReason::WriterTimeout;
                 break;
             }
 
@@ -129,7 +126,7 @@ impl Relay {
                     "{} failed to write {} bytes. Err = {:?}, CTX={}",
                     self.name, n, e, self.tunnel_ctx
                 );
-                shutdown_reason = RelayShutdownReasons::WriteError;
+                shutdown_reason = ShutdownReason::WriteError;
                 break;
             }
 
@@ -149,7 +146,7 @@ impl Relay {
 
         let duration = Instant::now().duration_since(start_time);
 
-        let stats = RelayStats {
+        let stats = Stats {
             shutdown_reason,
             total_bytes,
             event_count,
@@ -164,7 +161,7 @@ impl Relay {
     async fn shutdown<W: AsyncWriteExt + Sized>(
         &self,
         dest: &mut WriteHalf<W>,
-        reason: &RelayShutdownReasons,
+        reason: &ShutdownReason,
     ) {
         match dest.shutdown().await {
             Ok(()) => {
@@ -183,15 +180,15 @@ impl Relay {
     }
 }
 
-impl RelayPolicy {
+impl Policy {
     /// Basic rate limiting. Placeholder for more sophisticated policy handling,
     /// e.g. sliding windows, detecting heavy hitters, etc.
     pub fn check_transmission_rates(
         &self,
         start: &Instant,
         total_bytes: usize,
-    ) -> Result<(), RelayShutdownReasons> {
-        if self.min_rate_bpm == 0 && self.max_rate_bps >= NO_BANDWIDTH_LIMIT {
+    ) -> Result<(), ShutdownReason> {
+        if self.min_rate_bpm == 0 && self.max_rate_bps >= config::NO_BANDWIDTH_LIMIT {
             return Ok(());
         }
         let elapsed = Instant::now().duration_since(*start);
@@ -199,11 +196,11 @@ impl RelayPolicy {
         if elapsed.as_secs_f32() > 5. && total_bytes as u64 / elapsed.as_secs() > self.max_rate_bps
         {
             // prevent bandwidth abuse
-            Err(RelayShutdownReasons::TooFast)
+            Err(ShutdownReason::TooFast)
         } else if elapsed.as_secs_f32() >= 30.
             && total_bytes as f64 / elapsed.as_secs_f64() / 60. < self.min_rate_bpm as f64
         {
-            Err(RelayShutdownReasons::TooSlow)
+            Err(ShutdownReason::TooSlow)
         } else {
             Ok(())
         }
@@ -211,7 +208,7 @@ impl RelayPolicy {
 
     /// Each async operation must be time-bound.
     pub async fn timed_operation<T: Future>(&self, f: T) -> Result<<T as Future>::Output, ()> {
-        if self.idle_timeout >= NO_TIMEOUT {
+        if self.idle_timeout >= config::NO_TIMEOUT {
             return Ok(f.await);
         }
         let result = timeout(self.idle_timeout, f).await;
@@ -224,7 +221,7 @@ impl RelayPolicy {
     }
 }
 
-impl fmt::Display for RelayStats {
+impl fmt::Display for Stats {
     #[allow(clippy::cast_precision_loss)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -240,7 +237,7 @@ impl fmt::Display for RelayStats {
 }
 
 fn default_timeout() -> Duration {
-    NO_TIMEOUT
+    config::NO_TIMEOUT
 }
 
 fn default_min_rate() -> u64 {
@@ -248,16 +245,16 @@ fn default_min_rate() -> u64 {
 }
 
 fn default_max_rate() -> u64 {
-    NO_BANDWIDTH_LIMIT
+    config::NO_BANDWIDTH_LIMIT
 }
 
-impl Default for RelayPolicy {
+impl Default for Policy {
     fn default() -> Self {
         // by default no restrictions
         Self {
-            idle_timeout: NO_TIMEOUT,
+            idle_timeout: config::NO_TIMEOUT,
             min_rate_bpm: 0,
-            max_rate_bps: NO_BANDWIDTH_LIMIT,
+            max_rate_bps: config::NO_BANDWIDTH_LIMIT,
         }
     }
 }
@@ -272,13 +269,13 @@ mod test_relay_policy {
     use tokio_test::io::Builder;
     use tokio_test::io::Mock;
 
-    use crate::relay::{RelayPolicy, RelayShutdownReasons};
+    use crate::relay;
 
     use self::tokio::io::{AsyncReadExt, Error, ErrorKind};
 
     #[test]
     fn test_enforce_policy_ok() {
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1000,
             max_rate_bps: 100_000,
             idle_timeout: Duration::from_secs(1),
@@ -291,7 +288,7 @@ mod test_relay_policy {
 
     #[test]
     fn test_enforce_policy_too_fast() {
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1000,
             max_rate_bps: 100_000,
             idle_timeout: Duration::from_secs(1),
@@ -300,12 +297,12 @@ mod test_relay_policy {
         // 10m in 10 second is way too fast
         let result = relay_policy.check_transmission_rates(&start, 10_000_000);
         assert!(result.is_err());
-        assert_eq!(RelayShutdownReasons::TooFast, result.unwrap_err());
+        assert_eq!(relay::ShutdownReason::TooFast, result.unwrap_err());
     }
 
     #[test]
     fn test_enforce_policy_too_slow() {
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1000,
             max_rate_bps: 100_000,
             idle_timeout: Duration::from_secs(1),
@@ -314,7 +311,7 @@ mod test_relay_policy {
         let start = Instant::now().sub(Duration::from_secs(40));
         let result = relay_policy.check_transmission_rates(&start, 100);
         assert!(result.is_err());
-        assert_eq!(RelayShutdownReasons::TooSlow, result.unwrap_err());
+        assert_eq!(relay::ShutdownReason::TooSlow, result.unwrap_err());
     }
 
     #[tokio::test]
@@ -322,7 +319,7 @@ mod test_relay_policy {
         let data = b"data on the wire";
         let mut mock_connection: Mock = Builder::new().read(data).build();
 
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1000,
             max_rate_bps: 100_000,
             idle_timeout: Duration::from_secs(5),
@@ -342,7 +339,7 @@ mod test_relay_policy {
             .read_error(Error::from(ErrorKind::BrokenPipe))
             .build();
 
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1000,
             max_rate_bps: 100_000,
             idle_timeout: Duration::from_secs(5),
@@ -363,7 +360,7 @@ mod test_relay_policy {
             .wait(Duration::from_secs(time_duration * 2))
             .build();
 
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1000,
             max_rate_bps: 100_000,
             idle_timeout: Duration::from_secs(time_duration),
@@ -381,16 +378,14 @@ mod test_relay_policy {
 mod test_relay {
     extern crate tokio;
 
+    use self::tokio::io::{Error, ErrorKind};
     use std::time::Duration;
-
     use tokio::io;
     use tokio_test::io::Builder;
     use tokio_test::io::Mock;
 
-    use crate::relay::{Relay, RelayPolicy, RelayShutdownReasons};
-
-    use self::tokio::io::{Error, ErrorKind};
-    use crate::tunnel::TunnelCtx;
+    use crate::relay;
+    use crate::tunnel;
 
     #[tokio::test]
     async fn test_relay_ok() {
@@ -398,13 +393,13 @@ mod test_relay {
         let reader: Mock = Builder::new().read(data).read(data).read(data).build();
         let writer: Mock = Builder::new().write(data).write(data).write(data).build();
 
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1000,
             max_rate_bps: 100_000,
             idle_timeout: Duration::from_secs(5),
         };
 
-        let relay: Relay = build_relay(relay_policy);
+        let relay: relay::Relay = build_relay(relay_policy);
 
         let (client_recv, _) = io::split(reader);
         let (_, target_send) = io::split(writer);
@@ -415,7 +410,7 @@ mod test_relay {
         let stats = result.unwrap();
 
         assert_eq!(
-            RelayShutdownReasons::GracefulShutdown,
+            relay::ShutdownReason::GracefulShutdown,
             stats.shutdown_reason
         );
 
@@ -432,13 +427,13 @@ mod test_relay {
             .build();
         let writer: Mock = Builder::new().write(data).build();
 
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1000,
             max_rate_bps: 100_000,
             idle_timeout: Duration::from_secs(5),
         };
 
-        let relay: Relay = build_relay(relay_policy);
+        let relay: relay::Relay = build_relay(relay_policy);
 
         let (client_recv, _) = io::split(reader);
         let (_, target_send) = io::split(writer);
@@ -448,7 +443,7 @@ mod test_relay {
         assert!(result.is_ok());
         let stats = result.unwrap();
 
-        assert_eq!(RelayShutdownReasons::ReadError, stats.shutdown_reason);
+        assert_eq!(relay::ShutdownReason::ReadError, stats.shutdown_reason);
     }
 
     #[tokio::test]
@@ -460,13 +455,13 @@ mod test_relay {
             .build();
         let writer: Mock = Builder::new().write(data).build();
 
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1000,
             max_rate_bps: 100_000,
             idle_timeout: Duration::from_secs(1),
         };
 
-        let relay: Relay = build_relay(relay_policy);
+        let relay: relay::Relay = build_relay(relay_policy);
 
         let (client_recv, _) = io::split(reader);
         let (_, target_send) = io::split(writer);
@@ -476,7 +471,7 @@ mod test_relay {
         assert!(result.is_ok());
         let stats = result.unwrap();
 
-        assert_eq!(RelayShutdownReasons::ReaderTimeout, stats.shutdown_reason);
+        assert_eq!(relay::ShutdownReason::ReaderTimeout, stats.shutdown_reason);
     }
 
     #[tokio::test]
@@ -488,13 +483,13 @@ mod test_relay {
             .write_error(Error::from(ErrorKind::BrokenPipe))
             .build();
 
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1000,
             max_rate_bps: 100_000,
             idle_timeout: Duration::from_secs(5),
         };
 
-        let relay: Relay = build_relay(relay_policy);
+        let relay: relay::Relay = build_relay(relay_policy);
 
         let (client_recv, _) = io::split(reader);
         let (_, target_send) = io::split(writer);
@@ -504,7 +499,7 @@ mod test_relay {
         assert!(result.is_ok());
         let stats = result.unwrap();
 
-        assert_eq!(RelayShutdownReasons::WriteError, stats.shutdown_reason);
+        assert_eq!(relay::ShutdownReason::WriteError, stats.shutdown_reason);
     }
 
     #[tokio::test]
@@ -513,13 +508,13 @@ mod test_relay {
         let reader: Mock = Builder::new().read(data).build();
         let writer: Mock = Builder::new().wait(Duration::from_secs(3)).build();
 
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1000,
             max_rate_bps: 100_000,
             idle_timeout: Duration::from_secs(1),
         };
 
-        let relay: Relay = build_relay(relay_policy);
+        let relay: relay::Relay = build_relay(relay_policy);
 
         let (client_recv, _) = io::split(reader);
         let (_, target_send) = io::split(writer);
@@ -529,7 +524,7 @@ mod test_relay {
         assert!(result.is_ok());
         let stats = result.unwrap();
 
-        assert_eq!(RelayShutdownReasons::WriterTimeout, stats.shutdown_reason);
+        assert_eq!(relay::ShutdownReason::WriterTimeout, stats.shutdown_reason);
     }
 
     #[tokio::test]
@@ -542,13 +537,13 @@ mod test_relay {
             .build();
         let writer: Mock = Builder::new().write(data).write(data).build();
 
-        let relay_policy: RelayPolicy = RelayPolicy {
+        let relay_policy: relay::Policy = relay::Policy {
             min_rate_bpm: 1,
             max_rate_bps: 1,
             idle_timeout: Duration::from_secs(10),
         };
 
-        let relay: Relay = build_relay(relay_policy);
+        let relay: relay::Relay = build_relay(relay_policy);
 
         let (client_recv, _) = io::split(reader);
         let (_, target_send) = io::split(writer);
@@ -558,16 +553,16 @@ mod test_relay {
         assert!(result.is_ok());
         let stats = result.unwrap();
 
-        assert_eq!(RelayShutdownReasons::TooFast, stats.shutdown_reason);
+        assert_eq!(relay::ShutdownReason::TooFast, stats.shutdown_reason);
 
         assert_eq!(data.len() * 2, stats.total_bytes);
         assert_eq!(2, stats.event_count);
     }
 
-    fn build_relay(relay_policy: RelayPolicy) -> Relay {
-        let ctx: TunnelCtx = TunnelCtx::new();
+    fn build_relay(relay_policy: relay::Policy) -> relay::Relay {
+        let ctx: tunnel::Ctx = tunnel::Ctx::new();
 
-        Relay {
+        relay::Relay {
             relay_policy: relay_policy,
             tunnel_ctx: ctx,
             name: "Test",

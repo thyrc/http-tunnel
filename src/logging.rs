@@ -1,4 +1,4 @@
-use crate::tunnel::{TunnelCtx, TunnelStats};
+use crate::tunnel;
 use log::{error, warn};
 use simplelog::{
     ColorChoice, CombinedLogger, ConfigBuilder, LevelFilter, SharedLogger, TermLogger,
@@ -7,7 +7,7 @@ use simplelog::{
 use std::fs::OpenOptions;
 use tokio::io;
 
-pub fn report_tunnel_metrics(ctx: TunnelCtx, stats: io::Result<TunnelStats>) {
+pub fn report_tunnel_metrics(ctx: tunnel::Ctx, stats: io::Result<tunnel::Stats>) {
     if let Ok(s) = stats {
         warn!(target: "metrics", "{}", serde_json::to_string(&s).expect("JSON serialization failed"));
     } else {

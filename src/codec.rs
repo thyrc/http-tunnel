@@ -1,5 +1,3 @@
-#![allow(clippy::module_name_repetitions)]
-
 use bytes::BytesMut;
 use core::fmt;
 use log::{debug, warn};
@@ -8,10 +6,9 @@ use std::str::Split;
 use tokio::io::{Error, ErrorKind};
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::target::Nugget;
-use crate::tunnel::{EstablishTunnelResult, TunnelCtx, TunnelTarget};
-
 use crate::config;
+use crate::target;
+use crate::tunnel;
 
 const REQUEST_END_MARKER: &[u8] = b"\r\n\r\n";
 /// A reasonable value to limit possible header size.
@@ -21,27 +18,27 @@ const MAX_HTTP_REQUEST_SIZE: usize = 16384;
 /// Supports only `CONNECT` method
 struct HttpConnectRequest {
     uri: String,
-    nugget: Option<Nugget>,
+    nugget: Option<target::Nugget>,
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct HttpTunnelTarget {
     pub target: String,
-    pub nugget: Option<Nugget>,
+    pub nugget: Option<target::Nugget>,
     // easily can be extended with something like
     // policies: Vec<TunnelPolicy>
 }
 
 /// Codec to extract `HTTP/1.1 CONNECT` requests and build a corresponding `HTTP` response.
 #[derive(Clone)]
-pub struct HttpTunnelCodec {
-    pub tunnel_ctx: TunnelCtx,
+pub struct HttpTunnel {
+    pub tunnel_ctx: tunnel::Ctx,
     pub enabled_targets: Option<config::Regex>,
 }
 
-impl Decoder for HttpTunnelCodec {
+impl Decoder for HttpTunnel {
     type Item = HttpTunnelTarget;
-    type Error = EstablishTunnelResult;
+    type Error = tunnel::ConnectionResult;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if !got_http_request(src) {
@@ -55,7 +52,7 @@ impl Decoder for HttpTunnelCodec {
                         "Target `{}` is not allowed. Allowed: `{}`, CTX={}",
                         parsed_request.uri, regex, self.tunnel_ctx
                     );
-                    Err(EstablishTunnelResult::Forbidden)
+                    Err(tunnel::ConnectionResult::Forbidden)
                 }
                 _ => Ok(Some(HttpTunnelTarget {
                     target: parsed_request.uri,
@@ -67,28 +64,28 @@ impl Decoder for HttpTunnelCodec {
     }
 }
 
-impl Encoder<EstablishTunnelResult> for HttpTunnelCodec {
+impl Encoder<tunnel::ConnectionResult> for HttpTunnel {
     type Error = std::io::Error;
 
     fn encode(
         &mut self,
-        item: EstablishTunnelResult,
+        item: tunnel::ConnectionResult,
         dst: &mut BytesMut,
     ) -> Result<(), Self::Error> {
         let (code, message) = match item {
-            EstablishTunnelResult::Ok => (200, "OK"),
-            EstablishTunnelResult::OkWithNugget => {
+            tunnel::ConnectionResult::Ok => (200, "OK"),
+            tunnel::ConnectionResult::OkWithNugget => {
                 // do nothing, upstream should respond instead
                 return Ok(());
             }
-            EstablishTunnelResult::BadRequest => (400, "BAD_REQUEST"),
-            EstablishTunnelResult::Forbidden => (403, "FORBIDDEN"),
-            EstablishTunnelResult::OperationNotAllowed => (405, "NOT_ALLOWED"),
-            EstablishTunnelResult::RequestTimeout => (408, "TIMEOUT"),
-            EstablishTunnelResult::TooManyRequests => (429, "TOO_MANY_REQUESTS"),
-            EstablishTunnelResult::ServerError => (500, "SERVER_ERROR"),
-            EstablishTunnelResult::BadGateway => (502, "BAD_GATEWAY"),
-            EstablishTunnelResult::GatewayTimeout => (504, "GATEWAY_TIMEOUT"),
+            tunnel::ConnectionResult::BadRequest => (400, "BAD_REQUEST"),
+            tunnel::ConnectionResult::Forbidden => (403, "FORBIDDEN"),
+            tunnel::ConnectionResult::OperationNotAllowed => (405, "NOT_ALLOWED"),
+            tunnel::ConnectionResult::RequestTimeout => (408, "TIMEOUT"),
+            tunnel::ConnectionResult::TooManyRequests => (429, "TOO_MANY_REQUESTS"),
+            tunnel::ConnectionResult::ServerError => (500, "SERVER_ERROR"),
+            tunnel::ConnectionResult::BadGateway => (502, "BAD_GATEWAY"),
+            tunnel::ConnectionResult::GatewayTimeout => (504, "GATEWAY_TIMEOUT"),
         };
 
         #[allow(clippy::cast_sign_loss)]
@@ -97,7 +94,7 @@ impl Encoder<EstablishTunnelResult> for HttpTunnelCodec {
     }
 }
 
-impl TunnelTarget for HttpTunnelTarget {
+impl tunnel::Target for HttpTunnelTarget {
     type Addr = String;
 
     fn target_addr(&self) -> Self::Addr {
@@ -108,7 +105,7 @@ impl TunnelTarget for HttpTunnelTarget {
         self.nugget.is_some()
     }
 
-    fn nugget(&self) -> &Nugget {
+    fn nugget(&self) -> &target::Nugget {
         self.nugget
             .as_ref()
             .expect("Cannot use this method without checking `has_nugget`")
@@ -134,18 +131,18 @@ fn got_http_request(buffer: &BytesMut) -> bool {
             .any(|w| w == REQUEST_END_MARKER)
 }
 
-impl From<Error> for EstablishTunnelResult {
+impl From<Error> for tunnel::ConnectionResult {
     fn from(e: Error) -> Self {
         match e.kind() {
-            ErrorKind::TimedOut => EstablishTunnelResult::GatewayTimeout,
-            _ => EstablishTunnelResult::BadGateway,
+            ErrorKind::TimedOut => tunnel::ConnectionResult::GatewayTimeout,
+            _ => tunnel::ConnectionResult::BadGateway,
         }
     }
 }
 
 /// Basic HTTP Request parser which only purpose is to parse `CONNECT` requests.
 impl HttpConnectRequest {
-    pub fn parse(http_request: &[u8]) -> Result<Self, EstablishTunnelResult> {
+    pub fn parse(http_request: &[u8]) -> Result<Self, tunnel::ConnectionResult> {
         HttpConnectRequest::precondition_size(http_request)?;
         HttpConnectRequest::precondition_legal_characters(http_request)?;
 
@@ -167,7 +164,7 @@ impl HttpConnectRequest {
                 .unwrap_or_else(|| request_line.1.to_string());
             Ok(Self {
                 uri,
-                nugget: Some(Nugget::new(http_request)),
+                nugget: Some(target::Nugget::new(http_request)),
             })
         } else {
             Ok(Self {
@@ -199,7 +196,7 @@ impl HttpConnectRequest {
 
     fn parse_request_line(
         request_line: &str,
-    ) -> Result<(&str, &str, &str, bool), EstablishTunnelResult> {
+    ) -> Result<(&str, &str, &str, bool), tunnel::ConnectionResult> {
         let request_line_items = request_line.split(' ').collect::<Vec<&str>>();
         HttpConnectRequest::precondition_well_formed(request_line, &request_line_items)?;
 
@@ -216,62 +213,62 @@ impl HttpConnectRequest {
     fn precondition_well_formed(
         request_line: &str,
         request_line_items: &[&str],
-    ) -> Result<(), EstablishTunnelResult> {
+    ) -> Result<(), tunnel::ConnectionResult> {
         if request_line_items.len() == 3 {
             Ok(())
         } else {
             debug!("Bad request line: `{:?}`", request_line,);
-            Err(EstablishTunnelResult::BadRequest)
+            Err(tunnel::ConnectionResult::BadRequest)
         }
     }
 
-    fn check_version(version: &str) -> Result<(), EstablishTunnelResult> {
+    fn check_version(version: &str) -> Result<(), tunnel::ConnectionResult> {
         if version == "HTTP/1.1" {
             Ok(())
         } else {
             debug!("Bad version '{}'", version);
-            Err(EstablishTunnelResult::BadRequest)
+            Err(tunnel::ConnectionResult::BadRequest)
         }
     }
 
     #[cfg(not(feature = "plain_text"))]
-    fn check_method(method: &str) -> Result<bool, EstablishTunnelResult> {
+    fn check_method(method: &str) -> Result<bool, tunnel::ConnectionResult> {
         if method == "CONNECT" {
             Ok(false)
         } else {
             debug!("Method not allowed '{}'", method);
-            Err(EstablishTunnelResult::OperationNotAllowed)
+            Err(tunnel::ConnectionResult::OperationNotAllowed)
         }
     }
 
     #[allow(clippy::unnecessary_wraps)]
     #[cfg(feature = "plain_text")]
-    fn check_method(method: &str) -> Result<bool, EstablishTunnelResult> {
+    fn check_method(method: &str) -> Result<bool, tunnel::ConnectionResult> {
         Ok(method != "CONNECT")
     }
 
-    fn precondition_legal_characters(http_request: &[u8]) -> Result<(), EstablishTunnelResult> {
+    fn precondition_legal_characters(http_request: &[u8]) -> Result<(), tunnel::ConnectionResult> {
         for b in http_request {
             match b {
                 // non-ascii characters don't make sense in this context
                 32..=126 | 9 | 10 | 13 => {}
                 _ => {
                     debug!("Bad request header. Illegal character: {:#04x}", b);
-                    return Err(EstablishTunnelResult::BadRequest);
+                    return Err(tunnel::ConnectionResult::BadRequest);
                 }
             }
         }
         Ok(())
     }
 
-    fn precondition_size(http_request: &[u8]) -> Result<(), EstablishTunnelResult> {
+    fn precondition_size(http_request: &[u8]) -> Result<(), tunnel::ConnectionResult> {
         if http_request.len() >= MAX_HTTP_REQUEST_SIZE {
             debug!(
                 "Bad request header. Size {} exceeds limit {}",
                 http_request.len(),
                 MAX_HTTP_REQUEST_SIZE
             );
-            Err(EstablishTunnelResult::BadRequest)
+            Err(tunnel::ConnectionResult::BadRequest)
         } else {
             Ok(())
         }
@@ -280,19 +277,15 @@ impl HttpConnectRequest {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::Regex;
     use bytes::{BufMut, BytesMut};
     use tokio_util::codec::{Decoder, Encoder};
 
-    use crate::codec::{
-        EstablishTunnelResult, HttpTunnelCodec, HttpTunnelTarget, MAX_HTTP_REQUEST_SIZE,
-        REQUEST_END_MARKER,
-    };
+    use crate::codec;
+    use crate::config::Regex;
+    use crate::tunnel;
+
     #[cfg(feature = "plain_text")]
-    use crate::target::Nugget;
-    #[cfg(feature = "plain_text")]
-    use crate::tunnel::EstablishTunnelResult::Forbidden;
-    use crate::tunnel::TunnelCtx;
+    use crate::target;
 
     #[test]
     fn test_got_http_request_partial() {
@@ -313,12 +306,12 @@ mod tests {
         let mut codec = build_codec();
         let mut buffer = BytesMut::new();
         buffer.put_slice(b"CONNECT foo.bar.com:443 HTTP/1.1");
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         let result = codec.decode(&mut buffer);
 
         assert_eq!(
             result,
-            Ok(Some(HttpTunnelTarget {
+            Ok(Some(codec::HttpTunnelTarget {
                 target: "foo.bar.com:443".to_string(),
                 nugget: None
             }))
@@ -329,12 +322,12 @@ mod tests {
     fn test_got_http_request_exceeding() {
         let mut codec = build_codec();
         let mut buffer = BytesMut::new();
-        while buffer.len() <= MAX_HTTP_REQUEST_SIZE {
+        while buffer.len() <= codec::MAX_HTTP_REQUEST_SIZE {
             buffer.put_slice(b"CONNECT foo.bar.com:443 HTTP/1.1\r\n");
         }
         let result = codec.decode(&mut buffer);
 
-        assert_eq!(result, Err(EstablishTunnelResult::BadRequest));
+        assert_eq!(result, Err(tunnel::ConnectionResult::BadRequest));
     }
 
     #[test]
@@ -342,7 +335,7 @@ mod tests {
         let mut codec = build_codec();
         let mut buffer = BytesMut::new();
         buffer.put_slice(b"CONNECT foo.bar.com:443 HTTP/1.1");
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         let result = codec.decode(&mut buffer);
         assert!(result.is_ok());
     }
@@ -356,7 +349,7 @@ mod tests {
                    Host: ignored\r\n\
                    Auithorization: ignored",
         );
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         let result = codec.decode(&mut buffer);
         assert!(result.is_ok());
     }
@@ -367,10 +360,10 @@ mod tests {
         let mut codec = build_codec();
         let mut buffer = BytesMut::new();
         buffer.put_slice(b"GET foo.bar.com:443 HTTP/1.1");
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         let result = codec.decode(&mut buffer);
 
-        assert_eq!(result, Err(EstablishTunnelResult::OperationNotAllowed));
+        assert_eq!(result, Err(tunnel::ConnectionResult::OperationNotAllowed));
     }
 
     #[test]
@@ -382,7 +375,7 @@ mod tests {
         buffer.put_slice(b"connection: keep-alive\r\n");
         buffer.put_slice(b"Host: \tfoo.bar.com:443 \t\r\n");
         buffer.put_slice(b"User-Agent: whatever");
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         let result = codec.decode(&mut buffer);
 
         assert!(result.is_ok());
@@ -400,7 +393,7 @@ mod tests {
         buffer.put_slice(b"connection: keep-alive\r\n");
         buffer.put_slice(b"Host: \tfoo.bar.com \t\r\n");
         buffer.put_slice(b"User-Agent: whatever");
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         let result = codec.decode(&mut buffer);
 
         assert!(result.is_ok());
@@ -418,7 +411,7 @@ mod tests {
         buffer.put_slice(b"connection: keep-alive\r\n");
         buffer.put_slice(b"Host: \tfoo.bar.com \t\r\n");
         buffer.put_slice(b"User-Agent: whatever");
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         let result = codec.decode(&mut buffer);
 
         assert!(result.is_ok());
@@ -436,7 +429,7 @@ mod tests {
         buffer.put_slice(b"connection: keep-alive\r\n");
         buffer.put_slice(b"Host: \tfoo.bar.com:443 \t\r\n");
         buffer.put_slice(b"User-Agent: whatever");
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         let result = codec.decode(&mut buffer);
 
         assert!(result.is_ok());
@@ -445,7 +438,7 @@ mod tests {
         let result = result.unwrap();
         assert!(result.nugget.is_some());
         let nugget = result.nugget.unwrap();
-        assert_eq!(nugget, Nugget::new(buffer.to_vec()));
+        assert_eq!(nugget, target::Nugget::new(buffer.to_vec()));
     }
 
     #[test]
@@ -457,7 +450,7 @@ mod tests {
         buffer.put_slice(b"connection: keep-alive\r\n");
         buffer.put_slice(b"Host: \tfoo.bar.com:443 \t\r\n");
         buffer.put_slice(b"User-Agent: whatever");
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         buffer.put_slice(b"{body: 'some json body'}");
         let result = codec.decode(&mut buffer);
 
@@ -467,7 +460,7 @@ mod tests {
         let result = result.unwrap();
         assert!(result.nugget.is_some());
         let nugget = result.nugget.unwrap();
-        assert_eq!(nugget, Nugget::new(buffer.to_vec()));
+        assert_eq!(nugget, target::Nugget::new(buffer.to_vec()));
     }
 
     #[test]
@@ -479,10 +472,10 @@ mod tests {
         buffer.put_slice(b"connection: keep-alive\r\n");
         buffer.put_slice(b"Host: \tsome.uknown.site.com:443 \t\r\n");
         buffer.put_slice(b"User-Agent: whatever");
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         let result = codec.decode(&mut buffer);
 
-        assert_eq!(result, Err(Forbidden));
+        assert_eq!(result, Err(tunnel::ConnectionResult::Forbidden));
     }
 
     #[test]
@@ -490,12 +483,12 @@ mod tests {
         let mut codec = build_codec();
         let mut buffer = BytesMut::new();
         buffer.put_slice(b"CONNECT foo.bar.com:443 HTTP/1.0");
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         let result = codec.decode(&mut buffer);
         assert!(result.is_err());
 
         let code = result.err().unwrap();
-        assert_eq!(code, EstablishTunnelResult::BadRequest);
+        assert_eq!(code, tunnel::ConnectionResult::BadRequest);
     }
 
     #[test]
@@ -516,7 +509,7 @@ mod tests {
 
             assert_eq!(
                 result,
-                Err(EstablishTunnelResult::BadRequest),
+                Err(tunnel::ConnectionResult::BadRequest),
                 "Didn't reject {}",
                 r
             );
@@ -527,14 +520,14 @@ mod tests {
     fn test_parse_request_exceeds_size() {
         let mut codec = build_codec();
         let mut buffer = BytesMut::new();
-        while !buffer.len() <= MAX_HTTP_REQUEST_SIZE {
+        while !buffer.len() <= codec::MAX_HTTP_REQUEST_SIZE {
             buffer.put_slice(b"CONNECT foo.bar.com:443 HTTP/1.1\r\n");
         }
 
-        buffer.put_slice(REQUEST_END_MARKER);
+        buffer.put_slice(codec::REQUEST_END_MARKER);
         let result = codec.decode(&mut buffer);
 
-        assert_eq!(result, Err(EstablishTunnelResult::BadRequest));
+        assert_eq!(result, Err(tunnel::ConnectionResult::BadRequest));
     }
 
     #[test]
@@ -544,14 +537,14 @@ mod tests {
         let pattern = Regex::new(r"^HTTP/1\.1 ([2-5][\d]{2}) [A-Z_]{2,20}\r\n\r\n").unwrap();
 
         for code in &[
-            EstablishTunnelResult::Ok,
-            EstablishTunnelResult::BadGateway,
-            EstablishTunnelResult::Forbidden,
-            EstablishTunnelResult::GatewayTimeout,
-            EstablishTunnelResult::OperationNotAllowed,
-            EstablishTunnelResult::RequestTimeout,
-            EstablishTunnelResult::ServerError,
-            EstablishTunnelResult::TooManyRequests,
+            tunnel::ConnectionResult::Ok,
+            tunnel::ConnectionResult::BadGateway,
+            tunnel::ConnectionResult::Forbidden,
+            tunnel::ConnectionResult::GatewayTimeout,
+            tunnel::ConnectionResult::OperationNotAllowed,
+            tunnel::ConnectionResult::RequestTimeout,
+            tunnel::ConnectionResult::ServerError,
+            tunnel::ConnectionResult::TooManyRequests,
         ] {
             let mut buffer = BytesMut::new();
             let encoded = codec.encode(code.clone(), &mut buffer);
@@ -563,10 +556,10 @@ mod tests {
         }
     }
 
-    fn build_codec() -> HttpTunnelCodec {
-        let ctx = TunnelCtx::new();
+    fn build_codec() -> codec::HttpTunnel {
+        let ctx = tunnel::Ctx::new();
 
-        HttpTunnelCodec {
+        codec::HttpTunnel {
             tunnel_ctx: ctx,
             enabled_targets: Some(Regex::new(r"foo\.bar\.com:(443|80)").unwrap()),
         }

@@ -1,11 +1,12 @@
-#![allow(clippy::module_name_repetitions)]
-
 use std::fs;
 use std::process;
 use std::time::Duration;
 use toml::from_str;
 
-use crate::relay::{RelayPolicy, NO_BANDWIDTH_LIMIT, NO_TIMEOUT};
+use crate::relay;
+
+pub const NO_TIMEOUT: Duration = Duration::from_secs(300);
+pub const NO_BANDWIDTH_LIMIT: u64 = 1_000_000_000_000_u64;
 
 const HELP: &str = "\
 A simple HTTP(S) tunnel
@@ -24,7 +25,7 @@ Options:
   -h, --help                   Print help information (use `--help` for more detail)
   -V, --version                Print version information";
 
-use core::{fmt, ops};
+use std::{fmt, ops};
 
 #[derive(Clone, Debug)]
 pub struct Regex(regex_lite::Regex);
@@ -77,18 +78,17 @@ impl fmt::Display for Regex {
 }
 
 #[derive(Deserialize, Clone, Debug)]
-pub struct ClientConnectionConfig {
+pub struct ClientConnection {
     #[serde(default = "default_timeout")]
     #[serde(with = "humantime_serde")]
     pub initiation_timeout: Duration,
     #[serde(default)]
-    pub relay_policy: RelayPolicy,
+    pub relay_policy: relay::Policy,
 }
 
 #[derive(Deserialize, Clone, Debug)]
-pub struct TargetConnectionConfig {
-    #[serde(default = "default_timeout")]
-    #[serde(with = "humantime_serde")]
+pub struct TargetConnection {
+    #[serde(default = "default_timeout", with = "humantime_serde")]
     pub dns_cache_ttl: Duration,
     #[serde(default)]
     pub ipv4_only: bool,
@@ -96,17 +96,16 @@ pub struct TargetConnectionConfig {
     pub allowed_targets: Option<Regex>,
     #[serde(default)]
     pub allowed: Vec<String>,
-    #[serde(default = "default_timeout")]
-    #[serde(with = "humantime_serde")]
+    #[serde(default = "default_timeout", with = "humantime_serde")]
     pub connect_timeout: Duration,
     #[serde(default)]
-    pub relay_policy: RelayPolicy,
+    pub relay_policy: relay::Policy,
 }
 
 #[derive(Deserialize, Clone, Debug)]
-pub struct TunnelConfig {
-    pub client_connection: ClientConnectionConfig,
-    pub target_connection: TargetConnectionConfig,
+pub struct Tunnel {
+    pub client_connection: ClientConnection,
+    pub target_connection: TargetConnection,
 }
 
 #[derive(Clone, Debug)]
@@ -116,10 +115,10 @@ pub enum ProxyMode {
 }
 
 #[derive(Clone, Debug)]
-pub struct ProxyConfiguration {
+pub struct Proxy {
     pub mode: ProxyMode,
     pub bind_address: String,
-    pub tunnel_config: TunnelConfig,
+    pub tunnel_config: Tunnel,
     pub verbosity: u8,
     pub quiet: bool,
     pub log_file: Option<String>,
@@ -130,25 +129,25 @@ fn default_timeout() -> Duration {
     NO_TIMEOUT
 }
 
-impl Default for TunnelConfig {
+impl Default for Tunnel {
     fn default() -> Self {
         // by default no restrictions
         Self {
-            client_connection: ClientConnectionConfig {
+            client_connection: ClientConnection {
                 initiation_timeout: NO_TIMEOUT,
-                relay_policy: RelayPolicy {
+                relay_policy: relay::Policy {
                     idle_timeout: NO_TIMEOUT,
                     min_rate_bpm: 0,
                     max_rate_bps: NO_BANDWIDTH_LIMIT,
                 },
             },
-            target_connection: TargetConnectionConfig {
+            target_connection: TargetConnection {
                 dns_cache_ttl: NO_TIMEOUT,
                 ipv4_only: false,
                 allowed_targets: None,
                 allowed: vec![],
                 connect_timeout: NO_TIMEOUT,
-                relay_policy: RelayPolicy {
+                relay_policy: relay::Policy {
                     idle_timeout: NO_TIMEOUT,
                     min_rate_bpm: 0,
                     max_rate_bps: NO_BANDWIDTH_LIMIT,
@@ -158,8 +157,8 @@ impl Default for TunnelConfig {
     }
 }
 
-impl TunnelConfig {
-    fn build_allowed_targets(mut self) -> Result<TunnelConfig, regex_lite::Error> {
+impl Tunnel {
+    fn build_allowed_targets(mut self) -> Result<Tunnel, regex_lite::Error> {
         if !self.target_connection.allowed.is_empty() {
             let with_port = Regex::new(":[0-9]+$").expect("BUG: Bad port regex");
             let mut vec = Vec::new();
@@ -192,8 +191,8 @@ impl TunnelConfig {
     }
 }
 
-impl ProxyConfiguration {
-    pub fn from_command_line() -> ProxyConfiguration {
+impl Proxy {
+    pub fn from_command_line() -> Proxy {
         match parse_args() {
             Ok(args) => args,
             Err(e) => {
@@ -203,7 +202,7 @@ impl ProxyConfiguration {
         }
     }
 
-    fn read_tunnel_config(filename: &str) -> TunnelConfig {
+    fn read_tunnel_config(filename: &str) -> Tunnel {
         let tomlfile = match fs::read_to_string(filename) {
             Ok(s) => s,
             Err(e) => {
@@ -212,7 +211,7 @@ impl ProxyConfiguration {
             }
         };
 
-        let result: TunnelConfig = match from_str(&tomlfile) {
+        let result: Tunnel = match from_str(&tomlfile) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Error parsing toml {filename}: {e}");
@@ -230,7 +229,7 @@ impl ProxyConfiguration {
     }
 }
 
-fn parse_args() -> Result<ProxyConfiguration, lexopt::Error> {
+fn parse_args() -> Result<Proxy, lexopt::Error> {
     use lexopt::prelude::*;
 
     let mut config = None;
@@ -289,8 +288,8 @@ fn parse_args() -> Result<ProxyConfiguration, lexopt::Error> {
     }
 
     let tunnel_config = match config {
-        None => TunnelConfig::default(),
-        Some(config) => ProxyConfiguration::read_tunnel_config(&config),
+        None => Tunnel::default(),
+        Some(config) => Proxy::read_tunnel_config(&config),
     };
 
     if tcp {
@@ -301,7 +300,7 @@ fn parse_args() -> Result<ProxyConfiguration, lexopt::Error> {
         mode = ProxyMode::Tcp(destination);
     }
 
-    Ok(ProxyConfiguration {
+    Ok(Proxy {
         mode,
         bind_address,
         tunnel_config,

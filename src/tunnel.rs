@@ -1,23 +1,20 @@
-#![allow(clippy::module_name_repetitions)]
-
-use core::fmt;
 use futures::stream::SplitStream;
 use futures::{SinkExt, StreamExt};
 use log::{debug, error};
 use rand::{thread_rng, Rng};
-use std::fmt::Display;
+use std::fmt;
 use std::time::Duration;
 use tokio::io::{self, AsyncRead, AsyncWrite};
 use tokio::time::timeout;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
-use crate::config::TunnelConfig;
-use crate::relay::{Relay, RelayPolicy, RelayStats};
-use crate::target::{Nugget, TargetConnector};
+use crate::config;
+use crate::relay;
+use crate::target;
 
 #[derive(Eq, PartialEq, Debug, Clone, Serialize)]
 #[allow(dead_code)]
-pub enum EstablishTunnelResult {
+pub enum ConnectionResult {
     /// Successfully connected to target.  
     Ok,
     /// Successfully connected to target but has a nugget to send after connection establishment.
@@ -52,58 +49,59 @@ pub enum EstablishTunnelResult {
 ///
 /// Once the target connection is established, it relays data until any connection is closed or an
 /// error happens.
-pub struct ConnectionTunnel<H, C, T> {
+pub struct Connection<H, C, T> {
     tunnel_request_codec: Option<H>,
-    tunnel_ctx: TunnelCtx,
+    tunnel_ctx: Ctx,
     target_connector: T,
     client: Option<C>,
-    tunnel_config: TunnelConfig,
+    tunnel_config: config::Tunnel,
 }
 
-pub trait TunnelTarget {
+pub trait Target {
     type Addr;
     fn target_addr(&self) -> Self::Addr;
     fn has_nugget(&self) -> bool;
-    fn nugget(&self) -> &Nugget;
+    fn nugget(&self) -> &target::Nugget;
 }
 
 /// We need to be able to trace events in logs/metrics.
 #[derive(Copy, Clone, Default, Serialize)]
-pub struct TunnelCtx {
+pub struct Ctx {
     /// We can easily extend it, if necessary. For now just a random u128.
     id: u128,
 }
 
-impl TunnelCtx {
+impl Ctx {
     pub fn new() -> Self {
-        TunnelCtx {
+        Ctx {
             id: thread_rng().gen::<u128>(),
         }
     }
 }
 
 /// Statistics
+#[allow(clippy::struct_field_names)]
 #[derive(Serialize)]
-pub struct TunnelStats {
-    tunnel_ctx: TunnelCtx,
-    result: EstablishTunnelResult,
-    upstream_stats: Option<RelayStats>,
-    downstream_stats: Option<RelayStats>,
+pub struct Stats {
+    tunnel_ctx: Ctx,
+    result: ConnectionResult,
+    upstream_stats: Option<relay::Stats>,
+    downstream_stats: Option<relay::Stats>,
 }
 
-impl<H, C, T> ConnectionTunnel<H, C, T>
+impl<H, C, T> Connection<H, C, T>
 where
-    H: Decoder<Error = EstablishTunnelResult> + Encoder<EstablishTunnelResult>,
-    H::Item: TunnelTarget + Sized + Display + Send + Sync,
+    H: Decoder<Error = ConnectionResult> + Encoder<ConnectionResult>,
+    H::Item: Target + Sized + fmt::Display + Send + Sync,
     C: AsyncRead + AsyncWrite + Sized + Send + Unpin + 'static,
-    T: TargetConnector<Target = H::Item>,
+    T: target::Connector<Target = H::Item>,
 {
     pub fn new(
         handshake_codec: H,
         target_connector: T,
         client: C,
-        tunnel_config: TunnelConfig,
-        tunnel_ctx: TunnelCtx,
+        tunnel_config: config::Tunnel,
+        tunnel_ctx: Ctx,
     ) -> Self {
         Self {
             tunnel_request_codec: Some(handshake_codec),
@@ -124,7 +122,7 @@ where
     ///
     /// # Note
     /// This method consumes `self` and thus can be called only once.
-    pub async fn start(mut self) -> io::Result<TunnelStats> {
+    pub async fn start(mut self) -> io::Result<Stats> {
         let stream = self.client.take().expect("downstream can be taken once");
 
         let tunnel_result = self
@@ -132,7 +130,7 @@ where
             .await;
 
         if let Err(error) = tunnel_result {
-            return Ok(TunnelStats {
+            return Ok(Stats {
                 tunnel_ctx: self.tunnel_ctx,
                 result: error,
                 upstream_stats: None,
@@ -154,8 +152,8 @@ where
     async fn establish_tunnel(
         &mut self,
         stream: C,
-        configuration: TunnelConfig,
-    ) -> Result<(C, T::Stream), EstablishTunnelResult> {
+        configuration: config::Tunnel,
+    ) -> Result<(C, T::Stream), ConnectionResult> {
         debug!("Accepting HTTP tunnel request: CTX={}", self.tunnel_ctx);
 
         let (mut write, mut read) = self
@@ -168,7 +166,7 @@ where
         let (response, target) = self.process_tunnel_request(&configuration, &mut read).await;
 
         let response_sent = match response {
-            EstablishTunnelResult::OkWithNugget => true,
+            ConnectionResult::OkWithNugget => true,
             _ => timeout(
                 configuration.client_connection.initiation_timeout,
                 write.send(response.clone()),
@@ -189,18 +187,15 @@ where
                 }
             }
         } else {
-            Err(EstablishTunnelResult::RequestTimeout)
+            Err(ConnectionResult::RequestTimeout)
         }
     }
 
     async fn process_tunnel_request(
         &mut self,
-        configuration: &TunnelConfig,
+        configuration: &config::Tunnel,
         read: &mut SplitStream<Framed<C, H>>,
-    ) -> (
-        EstablishTunnelResult,
-        Option<<T as TargetConnector>::Stream>,
-    ) {
+    ) -> (ConnectionResult, Option<<T as target::Connector>::Stream>) {
         let connect_request = timeout(
             configuration.client_connection.initiation_timeout,
             read.next(),
@@ -214,7 +209,7 @@ where
             error!("Client established connection but failed to send a HTTP request within {:?}, CTX={}",
                    configuration.client_connection.initiation_timeout,
                    self.tunnel_ctx);
-            response = EstablishTunnelResult::RequestTimeout;
+            response = ConnectionResult::RequestTimeout;
         } else if let Some(event) = connect_request.unwrap() {
             match event {
                 Ok(decoded_target) => {
@@ -229,9 +224,9 @@ where
                         Ok(t) => {
                             target = Some(t);
                             if has_nugget {
-                                EstablishTunnelResult::OkWithNugget
+                                ConnectionResult::OkWithNugget
                             } else {
-                                EstablishTunnelResult::Ok
+                                ConnectionResult::Ok
                             }
                         }
                         Err(e) => e,
@@ -242,7 +237,7 @@ where
                 }
             }
         } else {
-            response = EstablishTunnelResult::BadRequest;
+            response = ConnectionResult::BadRequest;
         }
 
         (response, target)
@@ -252,7 +247,7 @@ where
         &mut self,
         target: T::Target,
         connect_timeout: Duration,
-    ) -> Result<T::Stream, EstablishTunnelResult> {
+    ) -> Result<T::Stream, ConnectionResult> {
         debug!(
             "Establishing HTTP tunnel target connection: {}, CTX={}",
             target, self.tunnel_ctx,
@@ -262,11 +257,11 @@ where
             timeout(connect_timeout, self.target_connector.connect(&target)).await;
 
         if timed_connection_result.is_err() {
-            Err(EstablishTunnelResult::GatewayTimeout)
+            Err(ConnectionResult::GatewayTimeout)
         } else {
             match timed_connection_result.unwrap() {
                 Ok(tcp_stream) => Ok(tcp_stream),
-                Err(e) => Err(EstablishTunnelResult::from(e)),
+                Err(e) => Err(ConnectionResult::from(e)),
             }
         }
     }
@@ -278,20 +273,20 @@ pub async fn relay_connections<
 >(
     client: D,
     target: U,
-    ctx: TunnelCtx,
-    downstream_relay_policy: RelayPolicy,
-    upstream_relay_policy: RelayPolicy,
-) -> io::Result<TunnelStats> {
+    ctx: Ctx,
+    downstream_relay_policy: relay::Policy,
+    upstream_relay_policy: relay::Policy,
+) -> io::Result<Stats> {
     let (client_recv, client_send) = io::split(client);
     let (target_recv, target_send) = io::split(target);
 
-    let downstream_relay: Relay = Relay {
+    let downstream_relay: relay::Relay = relay::Relay {
         name: "Downstream",
         tunnel_ctx: ctx,
         relay_policy: downstream_relay_policy,
     };
 
-    let upstream_relay: Relay = Relay {
+    let upstream_relay: relay::Relay = relay::Relay {
         name: "Upstream",
         tunnel_ctx: ctx,
         relay_policy: upstream_relay_policy,
@@ -309,15 +304,15 @@ pub async fn relay_connections<
     let downstream_stats = downstream_task.await??;
     let upstream_stats = upstream_task.await??;
 
-    Ok(TunnelStats {
+    Ok(Stats {
         tunnel_ctx: ctx,
-        result: EstablishTunnelResult::Ok,
+        result: ConnectionResult::Ok,
         upstream_stats: Some(upstream_stats),
         downstream_stats: Some(downstream_stats),
     })
 }
 
-impl fmt::Display for TunnelCtx {
+impl fmt::Display for Ctx {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.id)
     }
@@ -327,19 +322,17 @@ impl fmt::Display for TunnelCtx {
 mod test {
     extern crate tokio;
 
+    use self::tokio::io::{AsyncWriteExt, Error, ErrorKind};
     use std::time::Duration;
-
     use tokio::io;
     use tokio_test::io::Builder;
     use tokio_test::io::Mock;
 
-    use crate::relay::RelayPolicy;
-
-    use self::tokio::io::{AsyncWriteExt, Error, ErrorKind};
-    use crate::codec::{HttpTunnelCodec, HttpTunnelTarget};
-    use crate::config::{ClientConnectionConfig, Regex, TargetConnectionConfig, TunnelConfig};
-    use crate::target::TargetConnector;
-    use crate::tunnel::{ConnectionTunnel, EstablishTunnelResult, TunnelCtx, TunnelTarget};
+    use crate::codec;
+    use crate::config::{self, Regex};
+    use crate::relay;
+    use crate::target;
+    use crate::tunnel::{self, Target};
 
     #[tokio::test]
     async fn test_tunnel_ok() {
@@ -360,9 +353,9 @@ mod test {
             .read(tunneled_response)
             .build();
 
-        let ctx = TunnelCtx::new();
+        let ctx = tunnel::Ctx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodec {
+        let codec: codec::HttpTunnel = codec::HttpTunnel {
             tunnel_ctx: ctx,
             enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
         };
@@ -377,13 +370,13 @@ mod test {
         let default_timeout = Duration::from_secs(5);
         let config = build_config(default_timeout);
 
-        let result = ConnectionTunnel::new(codec, connector, client, config, ctx)
+        let result = tunnel::Connection::new(codec, connector, client, config, ctx)
             .start()
             .await;
 
         assert!(result.is_ok());
         let stats = result.unwrap();
-        assert_eq!(stats.result, EstablishTunnelResult::Ok);
+        assert_eq!(stats.result, tunnel::ConnectionResult::Ok);
         assert!(stats.upstream_stats.is_some());
         assert!(stats.downstream_stats.is_some());
 
@@ -411,9 +404,9 @@ mod test {
             .read(tunneled_response)
             .build();
 
-        let ctx = TunnelCtx::new();
+        let ctx = tunnel::Ctx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodec {
+        let codec: codec::HttpTunnel = codec::HttpTunnel {
             tunnel_ctx: ctx,
             enabled_targets: Some(Regex::new(r"foo\.bar:443").unwrap()),
         };
@@ -428,13 +421,13 @@ mod test {
         let default_timeout = Duration::from_secs(5);
         let config = build_config(default_timeout);
 
-        let result = ConnectionTunnel::new(codec, connector, client, config, ctx)
+        let result = tunnel::Connection::new(codec, connector, client, config, ctx)
             .start()
             .await;
 
         assert!(result.is_ok());
         let stats = result.unwrap();
-        assert_eq!(stats.result, EstablishTunnelResult::Ok);
+        assert_eq!(stats.result, tunnel::ConnectionResult::Ok);
         assert!(stats.upstream_stats.is_some());
         assert!(stats.downstream_stats.is_some());
 
@@ -454,9 +447,9 @@ mod test {
             .write(handshake_response)
             .build();
 
-        let ctx = TunnelCtx::new();
+        let ctx = tunnel::Ctx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodec {
+        let codec: codec::HttpTunnel = codec::HttpTunnel {
             tunnel_ctx: ctx,
             enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
         };
@@ -471,13 +464,13 @@ mod test {
         let default_timeout = Duration::from_secs(1);
         let config = build_config(default_timeout);
 
-        let result = ConnectionTunnel::new(codec, connector, client, config, ctx)
+        let result = tunnel::Connection::new(codec, connector, client, config, ctx)
             .start()
             .await;
 
         assert!(result.is_ok());
         let stats = result.unwrap();
-        assert_eq!(stats.result, EstablishTunnelResult::RequestTimeout);
+        assert_eq!(stats.result, tunnel::ConnectionResult::RequestTimeout);
         assert!(stats.upstream_stats.is_none());
         assert!(stats.downstream_stats.is_none());
     }
@@ -493,9 +486,9 @@ mod test {
 
         let target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtx::new();
+        let ctx = tunnel::Ctx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodec {
+        let codec: codec::HttpTunnel = codec::HttpTunnel {
             tunnel_ctx: ctx,
             enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
         };
@@ -510,13 +503,13 @@ mod test {
         let default_timeout = Duration::from_secs(1);
         let config = build_config(default_timeout);
 
-        let result = ConnectionTunnel::new(codec, connector, client, config, ctx)
+        let result = tunnel::Connection::new(codec, connector, client, config, ctx)
             .start()
             .await;
 
         assert!(result.is_ok());
         let stats = result.unwrap();
-        assert_eq!(stats.result, EstablishTunnelResult::RequestTimeout);
+        assert_eq!(stats.result, tunnel::ConnectionResult::RequestTimeout);
         assert!(stats.upstream_stats.is_none());
         assert!(stats.downstream_stats.is_none());
     }
@@ -533,9 +526,9 @@ mod test {
 
         let target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtx::new();
+        let ctx = tunnel::Ctx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodec {
+        let codec: codec::HttpTunnel = codec::HttpTunnel {
             tunnel_ctx: ctx,
             enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
         };
@@ -550,13 +543,13 @@ mod test {
         let default_timeout = Duration::from_secs(1);
         let config = build_config(default_timeout);
 
-        let result = ConnectionTunnel::new(codec, connector, client, config, ctx)
+        let result = tunnel::Connection::new(codec, connector, client, config, ctx)
             .start()
             .await;
 
         assert!(result.is_ok());
         let stats = result.unwrap();
-        assert_eq!(stats.result, EstablishTunnelResult::GatewayTimeout);
+        assert_eq!(stats.result, tunnel::ConnectionResult::GatewayTimeout);
         assert!(stats.upstream_stats.is_none());
         assert!(stats.downstream_stats.is_none());
     }
@@ -573,9 +566,9 @@ mod test {
 
         let target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtx::new();
+        let ctx = tunnel::Ctx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodec {
+        let codec: codec::HttpTunnel = codec::HttpTunnel {
             tunnel_ctx: ctx,
             enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
         };
@@ -590,13 +583,13 @@ mod test {
         let default_timeout = Duration::from_secs(1);
         let config = build_config(default_timeout);
 
-        let result = ConnectionTunnel::new(codec, connector, client, config, ctx)
+        let result = tunnel::Connection::new(codec, connector, client, config, ctx)
             .start()
             .await;
 
         assert!(result.is_ok());
         let stats = result.unwrap();
-        assert_eq!(stats.result, EstablishTunnelResult::Forbidden);
+        assert_eq!(stats.result, tunnel::ConnectionResult::Forbidden);
         assert!(stats.upstream_stats.is_none());
         assert!(stats.downstream_stats.is_none());
     }
@@ -613,9 +606,9 @@ mod test {
 
         let _target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtx::new();
+        let ctx = tunnel::Ctx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodec {
+        let codec: codec::HttpTunnel = codec::HttpTunnel {
             tunnel_ctx: ctx,
             enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
         };
@@ -630,13 +623,13 @@ mod test {
         let default_timeout = Duration::from_secs(1);
         let config = build_config(default_timeout);
 
-        let result = ConnectionTunnel::new(codec, connector, client, config, ctx)
+        let result = tunnel::Connection::new(codec, connector, client, config, ctx)
             .start()
             .await;
 
         assert!(result.is_ok());
         let stats = result.unwrap();
-        assert_eq!(stats.result, EstablishTunnelResult::BadGateway);
+        assert_eq!(stats.result, tunnel::ConnectionResult::BadGateway);
         assert!(stats.upstream_stats.is_none());
         assert!(stats.downstream_stats.is_none());
     }
@@ -653,9 +646,9 @@ mod test {
 
         let _target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtx::new();
+        let ctx = tunnel::Ctx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodec {
+        let codec: codec::HttpTunnel = codec::HttpTunnel {
             tunnel_ctx: ctx,
             enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
         };
@@ -670,13 +663,13 @@ mod test {
         let default_timeout = Duration::from_secs(1);
         let config = build_config(default_timeout);
 
-        let result = ConnectionTunnel::new(codec, connector, client, config, ctx)
+        let result = tunnel::Connection::new(codec, connector, client, config, ctx)
             .start()
             .await;
 
         assert!(result.is_ok());
         let stats = result.unwrap();
-        assert_eq!(stats.result, EstablishTunnelResult::BadRequest);
+        assert_eq!(stats.result, tunnel::ConnectionResult::BadRequest);
         assert!(stats.upstream_stats.is_none());
         assert!(stats.downstream_stats.is_none());
     }
@@ -694,9 +687,9 @@ mod test {
 
         let _target: Mock = Builder::new().build();
 
-        let ctx = TunnelCtx::new();
+        let ctx = tunnel::Ctx::new();
 
-        let codec: HttpTunnelCodec = HttpTunnelCodec {
+        let codec: codec::HttpTunnel = codec::HttpTunnel {
             tunnel_ctx: ctx,
             enabled_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
         };
@@ -711,34 +704,34 @@ mod test {
         let default_timeout = Duration::from_secs(1);
         let config = build_config(default_timeout);
 
-        let result = ConnectionTunnel::new(codec, connector, client, config, ctx)
+        let result = tunnel::Connection::new(codec, connector, client, config, ctx)
             .start()
             .await;
 
         assert!(result.is_ok());
         let stats = result.unwrap();
-        assert_eq!(stats.result, EstablishTunnelResult::OperationNotAllowed);
+        assert_eq!(stats.result, tunnel::ConnectionResult::OperationNotAllowed);
         assert!(stats.upstream_stats.is_none());
         assert!(stats.downstream_stats.is_none());
     }
 
-    fn build_config(default_timeout: Duration) -> TunnelConfig {
-        TunnelConfig {
-            client_connection: ClientConnectionConfig {
+    fn build_config(default_timeout: Duration) -> config::Tunnel {
+        config::Tunnel {
+            client_connection: config::ClientConnection {
                 initiation_timeout: default_timeout,
-                relay_policy: RelayPolicy {
+                relay_policy: relay::Policy {
                     idle_timeout: default_timeout,
                     min_rate_bpm: 0,
                     max_rate_bps: 120410065,
                 },
             },
-            target_connection: TargetConnectionConfig {
+            target_connection: config::TargetConnection {
                 dns_cache_ttl: default_timeout,
                 ipv4_only: false,
                 allowed_targets: Some(Regex::new(r"foo\.bar:80").unwrap()),
                 allowed: vec!["foo.bar:80".to_string()],
                 connect_timeout: default_timeout,
-                relay_policy: RelayPolicy {
+                relay_policy: relay::Policy {
                     idle_timeout: default_timeout,
                     min_rate_bpm: 0,
                     max_rate_bps: 170310180,
@@ -754,8 +747,8 @@ mod test {
         error: Option<ErrorKind>,
     }
 
-    impl TargetConnector for MockTargetConnector {
-        type Target = HttpTunnelTarget;
+    impl target::Connector for MockTargetConnector {
+        type Target = codec::HttpTunnelTarget;
         type Stream = Mock;
 
         async fn connect(&mut self, target: &Self::Target) -> io::Result<Self::Stream> {
